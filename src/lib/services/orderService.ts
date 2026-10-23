@@ -7,16 +7,45 @@ export interface OrderLookupResult {
   error?: string;
 }
 
+// Map words to digits for spoken-style order recognition (e.g. "order one zero one" -> ORD-101)
+const SPOKEN_DIGIT_MAP: Record<string, string> = {
+  zero: "0",
+  oh: "0",
+  one: "1",
+  two: "2",
+  three: "3",
+  four: "4",
+  five: "5",
+  six: "6",
+  seven: "7",
+  eight: "8",
+  nine: "9",
+};
+
+function convertSpokenWordDigits(text: string): string {
+  return text.replace(
+    /\b(?:order|ord)\s+(zero|oh|one|two|three|four|five|six|seven|eight|nine)\s+(zero|oh|one|two|three|four|five|six|seven|eight|nine)\s+(zero|oh|one|two|three|four|five|six|seven|eight|nine)\b/gi,
+    (_match, d1, d2, d3) => {
+      const n1 = SPOKEN_DIGIT_MAP[d1.toLowerCase()] || d1;
+      const n2 = SPOKEN_DIGIT_MAP[d2.toLowerCase()] || d2;
+      const n3 = SPOKEN_DIGIT_MAP[d3.toLowerCase()] || d3;
+      return `ORD-${n1}${n2}${n3}`;
+    }
+  );
+}
+
 /**
  * Standardizes order ID input and validates format.
  * Supports:
  * - "ORD-101", "ord 101", "order 101", "sord 101"
  * - Spaced letters: "O R D 1 0 1", "o r d - 1 0 1"
+ * - Spoken words: "order one zero one", "ord one zero two"
  * - Spoken phrases like "order number 101" or plain "101" when in order context.
  */
 export function normalizeOrderId(rawId: string): string {
   if (!rawId) return "";
-  const cleaned = rawId.trim().toUpperCase();
+  const spokenConverted = convertSpokenWordDigits(rawId);
+  const cleaned = spokenConverted.trim().toUpperCase();
 
   // Handle spaced characters like "O R D 1 0 1" or "O R D - 1 0 1"
   const unspaced = cleaned.replace(/\bO\s+R\s+D(?:\s*-\s*|\s+)?(\d)\s*(\d)\s*(\d)\b/i, "ORD-$1$2$3");
@@ -39,34 +68,36 @@ export function normalizeOrderId(rawId: string): string {
  * Supports:
  * - "ORD-101", "ord 101", "order 101", "sord 101"
  * - "O R D 1 0 1"
+ * - Spoken words: "order one zero one", "ord one zero two"
  * - Standalone "101", "102", "103" when customer answers an order prompt
  * Avoids false positives on prices (e.g. ₹499, ₹699, ₹850), dates, product sizes (30ml).
  */
 export function extractOrderIdFromText(text: string, contextIndicatesOrder: boolean = false): string | null {
   if (!text) return null;
+  const normalizedText = convertSpokenWordDigits(text);
 
   // 1. Check for explicit spaced out letters: O R D 1 0 1
-  const spacedMatch = text.match(/\bO\s+R\s+D(?:\s*-\s*|\s+)?(\d)\s*(\d)\s*(\d)\b/i);
+  const spacedMatch = normalizedText.match(/\bO\s+R\s+D(?:\s*-\s*|\s+)?(\d)\s*(\d)\s*(\d)\b/i);
   if (spacedMatch) {
     const candidate = `ORD-${spacedMatch[1]}${spacedMatch[2]}${spacedMatch[3]}`;
     return candidate;
   }
 
   // 2. Check for explicit prefix patterns: "ORD-101", "ord 101", "order 101", "order number 101", "sord 101", "ord#101"
-  const prefixMatch = text.match(/\b(?:S?ORD(?:ER)?|ORDER\s+NUMBER)[\s#-]*([0-9]{3})\b/i);
+  const prefixMatch = normalizedText.match(/\b(?:S?ORD(?:ER)?|ORDER\s+NUMBER)[\s#-]*([0-9]{3})\b/i);
   if (prefixMatch) {
     return `ORD-${prefixMatch[1]}`;
   }
 
   // 3. Check for any explicit "ORD-[A-Za-z0-9]+" pattern (e.g., ORD-999)
-  const explicitOrd = text.match(/\bORD-([A-Za-z0-9]+)\b/i);
+  const explicitOrd = normalizedText.match(/\bORD-([A-Za-z0-9]+)\b/i);
   if (explicitOrd) {
     return `ORD-${explicitOrd[1].toUpperCase()}`;
   }
 
   // 4. If conversation context indicates an order was requested (e.g. "Could you share your order number?"):
   // look for standalone digits 101, 102, 103, 999 while avoiding currency symbols (₹, Rs, INR) or size units (ml, g)
-  const standaloneMatch = text.match(/(?<![₹$€£\d]|RS\.?\s*)\b(\d{3})\b(?!\s*(?:ML|G|KG|RS|RUPEES|%))/i);
+  const standaloneMatch = normalizedText.match(/(?<![₹$€£\d]|RS\.?\s*)\b(\d{3})\b(?!\s*(?:ML|G|KG|RS|RUPEES|%))/i);
   if (standaloneMatch) {
     const num = standaloneMatch[1];
     const candidate = `ORD-${num}`;
@@ -84,22 +115,23 @@ export function extractOrderIdFromText(text: string, contextIndicatesOrder: bool
  */
 export function extractAllOrderIdsFromText(text: string): string[] {
   if (!text) return [];
+  const normalizedText = convertSpokenWordDigits(text);
   const found = new Set<string>();
 
   // 1. Spaced out letters
-  const spacedMatches = Array.from(text.matchAll(/\bO\s+R\s+D(?:\s*-\s*|\s+)?(\d)\s*(\d)\s*(\d)\b/gi));
+  const spacedMatches = Array.from(normalizedText.matchAll(/\bO\s+R\s+D(?:\s*-\s*|\s+)?(\d)\s*(\d)\s*(\d)\b/gi));
   for (const m of spacedMatches) {
     found.add(`ORD-${m[1]}${m[2]}${m[3]}`);
   }
 
   // 2. Prefixes
-  const prefixMatches = Array.from(text.matchAll(/\b(?:S?ORD(?:ER)?|ORDER\s+NUMBER)[\s#-]*([0-9]{3})\b/gi));
+  const prefixMatches = Array.from(normalizedText.matchAll(/\b(?:S?ORD(?:ER)?|ORDER\s+NUMBER)[\s#-]*([0-9]{3})\b/gi));
   for (const m of prefixMatches) {
     found.add(`ORD-${m[1]}`);
   }
 
   // 3. Explicit ORD-XXX
-  const explicitMatches = Array.from(text.matchAll(/\bORD-([A-Za-z0-9]+)\b/gi));
+  const explicitMatches = Array.from(normalizedText.matchAll(/\bORD-([A-Za-z0-9]+)\b/gi));
   for (const m of explicitMatches) {
     found.add(`ORD-${m[1].toUpperCase()}`);
   }

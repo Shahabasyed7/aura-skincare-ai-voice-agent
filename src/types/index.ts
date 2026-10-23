@@ -44,6 +44,7 @@ export interface CallSummary {
   customer_intent: CustomerIntent;
   customer_issue: string;
   order_id: string | null;
+  order_ids?: string[];
   actions_taken: string[];
   resolution_status: ResolutionStatus;
   outcome: string;

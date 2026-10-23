@@ -606,8 +606,10 @@ describe("Section 8: 5 Verified Bug Fixes Regressions", () => {
 
     // Primary intent identified
     expect(summary.customer_intent).toBe("ORDER_TRACKING");
-    // Order ID preserved
-    expect(summary.order_id).toBe("ORD-101");
+    // Order ID field represents all touched orders
+    expect(summary.order_id).toContain("ORD-101");
+    expect(summary.order_id).toContain("ORD-102");
+    expect(summary.order_id).toContain("ORD-999");
     // Actions include primary and secondary topics
     expect(summary.actions_taken).toContain("Communicated courier and tracking information to customer");
     expect(summary.actions_taken).toContain("Evaluated return eligibility for ORD-102 against 7-day unopened policy");
@@ -713,10 +715,105 @@ describe("Section 8: 5 Verified Bug Fixes Regressions", () => {
     const pickedGeneric = selectAriaVoice(genericOnly);
     expect(pickedGeneric?.name).toBe("Default Voice");
 
-    // Empty list returns null without throwing
     expect(selectAriaVoice([])).toBeNull();
   });
 });
+
+  // Section 9: Remaining Verified Bug Fixes Regressions
+  describe("Section 9: Remaining Verified Bug Fixes Regressions", () => {
+    // 1. Post-call summary completeness & wording (ORD-101, ORD-102, ORD-103)
+    it("Summary: includes all orders touched (ORD-101, ORD-102, ORD-103), order_id field represents all orders, and no contradictory wording", () => {
+      const mixedTranscript = [
+        { sender: "aria" as const, text: "Namaste, I am Aria from Aura Skincare. How can I help you today?" },
+        { sender: "customer" as const, text: "Can you track ORD-101 for me?" },
+        { sender: "aria" as const, text: "Your order ORD-101 for Vitamin C Serum 30ml is out for delivery with BlueDart (Tracking ID: BD-982103) and is expected By 6 PM today." },
+        { sender: "customer" as const, text: "Can I return ORD-102? It was delivered 14 days ago and opened." },
+        { sender: "aria" as const, text: "Order ORD-102 was delivered 14 days ago, which exceeds our 7-day return window. We cannot accept returns beyond 7 days of delivery." },
+        { sender: "customer" as const, text: "Can I cancel ORD-103?" },
+        { sender: "aria" as const, text: "Order ORD-103 is currently Processing and is eligible for cancellation." },
+      ];
+
+      const summary = generateDeterministicSummary(mixedTranscript, "ORD-101", "call_mixed_test");
+
+      // Verify all touched orders are present in order_id field and order_ids array
+      expect(summary.order_id).toContain("ORD-101");
+      expect(summary.order_id).toContain("ORD-102");
+      expect(summary.order_id).toContain("ORD-103");
+      expect(summary.order_ids).toContain("ORD-101");
+      expect(summary.order_ids).toContain("ORD-102");
+      expect(summary.order_ids).toContain("ORD-103");
+
+      // Actions taken reflects ORD-103 cancellation check
+      expect(summary.actions_taken).toContain("Checked cancellation eligibility for ORD-103");
+
+      // Summary text covers secondary topics accurately
+      expect(summary.call_summary).toContain("ORD-101");
+      expect(summary.call_summary).toContain("ORD-102");
+      expect(summary.call_summary).toContain("ORD-103");
+
+      // Never claim an order was cancelled unless confirmed
+      expect(summary.outcome.toLowerCase()).not.toContain("order was cancelled");
+      expect(summary.call_summary.toLowerCase()).not.toContain("cancellation confirmed");
+
+      // Follow-up required is false when all policies were safely explained/resolved, so no contradictory UNRESOLVED + No follow-up needed
+      expect(summary.resolution_status).toBe("POLICY_EXPLAINED");
+      expect(summary.follow_up_required).toBe(false);
+    });
+
+    // 2. Correct return-policy handling when no order ID is provided
+    it("Return policy: explains 7-day unopened policy when user says 'I bought this 20 days ago and have opened it' without forcing order ID", async () => {
+      const turn = await orchestrateAgentTurn(
+        "I bought this 20 days ago and have opened it. Can I return it?",
+        []
+      );
+
+      expect(turn.intent).toBe("RETURN_REQUEST");
+      // Does not force user to provide an order ID first
+      expect(turn.reply.toLowerCase()).not.toContain("please share your order id");
+      expect(turn.reply.toLowerCase()).not.toContain("please provide your order number");
+      // Explains policy: 7 days, unopened, unused
+      expect(turn.reply.toLowerCase()).toContain("7 days");
+      expect(turn.reply.toLowerCase()).toContain("unopened");
+      // States it falls outside the return policy
+      expect(turn.reply.toLowerCase()).toContain("outside our return policy");
+      // Does not claim an order lookup occurred
+      expect(turn.detectedOrderId).toBeNull();
+    });
+
+    // 3. Spoken-style order ID normalization
+    it("Order ID: recognizes spoken-style 'order one zero one' and normalizes to ORD-101 without off-topic classification", async () => {
+      expect(normalizeOrderId("order one zero one")).toBe("ORD-101");
+      expect(normalizeOrderId("ord one zero two")).toBe("ORD-102");
+      expect(normalizeOrderId("order one zero three")).toBe("ORD-103");
+
+      const turn = await orchestrateAgentTurn("Can you track order one zero one?", []);
+      expect(turn.intent).toBe("ORDER_TRACKING");
+      expect(turn.detectedOrderId).toBe("ORD-101");
+      expect(turn.reply).toContain("ORD-101");
+      expect(turn.reply).toContain("BlueDart");
+    });
+
+    // 4. Refund demand handling without false promises
+    it("Refund demand: handles 'I want a ₹5,000 refund' appropriately without promising refunds or inventing timelines", async () => {
+      const turn = await orchestrateAgentTurn("I want a ₹5,000 refund right now", []);
+      expect(turn.intent).toBe("RETURN_REQUEST");
+      // Explains return conditions required for refunds
+      expect(turn.reply.toLowerCase()).toContain("refund");
+      expect(turn.reply.toLowerCase()).toContain("7 days");
+      // Does not promise or grant a refund
+      expect(turn.reply.toLowerCase()).not.toContain("your refund of ₹5,000 will be credited");
+      expect(turn.reply.toLowerCase()).not.toContain("we have initiated your refund");
+    });
+
+    // 5. Product copy quality (no garbled 'formulated for Suitable for')
+    it("Product copy: avoids garbled 'formulated for Suitable for' and presents clean, grounded answer", async () => {
+      const turn = await orchestrateAgentTurn("Is Hydrating Sunscreen safe for sensitive skin types?", []);
+      expect(turn.intent).toBe("PRODUCT_INQUIRY");
+      expect(turn.reply).not.toContain("formulated for Suitable for");
+      expect(turn.reply).toContain("suitable for everyday use");
+      expect(turn.reply).toContain("patch test");
+    });
+  });
 
 
 

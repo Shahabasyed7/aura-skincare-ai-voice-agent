@@ -70,6 +70,8 @@ export const CallSummaryView: React.FC<CallSummaryViewProps> = ({
         return "Cash on Delivery (COD)";
       case "PRODUCT_INQUIRY":
         return "Product Guidance";
+      case "UNKNOWN":
+        return "Out-of-scope request";
       default:
         return "Customer Care Inquiry";
     }

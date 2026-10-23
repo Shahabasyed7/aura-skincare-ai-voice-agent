@@ -270,7 +270,12 @@ export function getProductDeterministicAnswer(product: ProductCatalogEntry, quer
 
   // 7. Skin type & sensitivity
   if (lower.includes("skin type") || lower.includes("sensitive") || lower.includes("oily") || lower.includes("acne") || lower.includes("safe for")) {
-    return `${product.name} is formulated for ${product.skinTypeSuitability.join(", ")}. We always suggest a quick patch test behind the ear prior to first full application.`;
+    const suitability = product.skinTypeSuitability.join(", ");
+    // If suitability is already a complete phrase like "Suitable for everyday use", present cleanly without "formulated for Suitable for"
+    const sentence = /^suitable/i.test(suitability)
+      ? `${product.name} is ${suitability.toLowerCase()}`
+      : `${product.name} is suitable for ${suitability}`;
+    return `${sentence}. We always suggest a quick patch test behind the ear prior to first full application.`;
   }
 
   // 8. General overview / default product explanation
@@ -486,9 +491,11 @@ export async function orchestrateAgentTurn(
       lowerMsg.includes("used");
 
     let returnAnswer = "";
-    if (returnOrderId === "ORD-102" || (returnOrderId && mentionsPast7Days) || (!returnOrderId && mentionsPast7Days)) {
+    if (returnOrderId === "ORD-102" || (returnOrderId && mentionsPast7Days)) {
       const ordLabel = returnOrderId ? `for ${returnOrderId}` : "";
-      returnAnswer = `Regarding returns ${ordLabel}: Returns are only accepted within 7 days of delivery for unopened, unused products in original packaging. Because it was delivered 14 days ago and opened 20 days ago, it is outside the 7-day return window and not eligible for a return.`.replace(/\s+/g, " ");
+      returnAnswer = `Regarding returns ${ordLabel}: Returns are only accepted within 7 days of delivery for unopened, unused products in original packaging. Because it was delivered 14 days ago and opened, it is outside the 7-day return window and not eligible for a return.`.replace(/\s+/g, " ");
+    } else if (!returnOrderId && mentionsPast7Days) {
+      returnAnswer = "Regarding returns: Aura Skincare allows returns strictly within 7 days of delivery for unopened, unused products in original packaging. Because the product was purchased or delivered over 7 days ago and has been opened, this situation falls outside our return policy and is not eligible for a return.";
     } else if (returnOrderId) {
       const returnLookup = get_order_details(returnOrderId);
       if (returnLookup.success && returnLookup.order) {
@@ -510,6 +517,48 @@ export async function orchestrateAgentTurn(
       toolResult: undefined,
       usedFallback: true,
     };
+  }
+
+  // 1e. General Return & Refund demand handling when no order ID is provided (e.g. "I bought this 20 days ago and have opened it" or "I want a ₹5,000 refund")
+  const isGeneralReturnOrRefund =
+    lowerMsg.includes("return") ||
+    lowerMsg.includes("refund") ||
+    lowerMsg.includes("bought this") ||
+    lowerMsg.includes("bought it");
+
+  const hasAgeOrOpenedDetails =
+    lowerMsg.includes("20 days") ||
+    lowerMsg.includes("14 days") ||
+    lowerMsg.includes("days ago") ||
+    lowerMsg.includes("opened") ||
+    lowerMsg.includes("used");
+
+  const isRefundDemand =
+    lowerMsg.includes("refund") &&
+    (lowerMsg.includes("₹") || lowerMsg.includes("rs") || lowerMsg.includes("rupees") || lowerMsg.includes("5000") || lowerMsg.includes("5,000") || lowerMsg.includes("want a refund") || lowerMsg.includes("give me a refund"));
+
+  const detectedAnyOrderIdInTurn = Boolean(extractOrderIdFromText(message, false));
+
+  if (isGeneralReturnOrRefund && !detectedAnyOrderIdInTurn) {
+    if (isRefundDemand) {
+      return {
+        reply: "Refunds are processed only for approved returns that meet our brand policy—products must be returned within 7 days of delivery, unopened, unused, and in their original packaging. We cannot issue direct unverified refunds or promise refunds outside these verified return conditions.",
+        intent: "RETURN_REQUEST",
+        detectedOrderId: null,
+        toolResult: undefined,
+        usedFallback: true,
+      };
+    }
+
+    if (hasAgeOrOpenedDetails) {
+      return {
+        reply: "Aura Skincare accepts returns strictly within 7 days of delivery for unopened, unused products in original packaging. Because your purchase is beyond 7 days and has been opened, this situation falls outside our return policy and cannot be accepted for return.",
+        intent: "RETURN_REQUEST",
+        detectedOrderId: null,
+        toolResult: undefined,
+        usedFallback: true,
+      };
+    }
   }
 
   // 2. Check if previous turn asked for an order number

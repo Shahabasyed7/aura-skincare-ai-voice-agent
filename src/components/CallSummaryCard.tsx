@@ -52,7 +52,9 @@ export const CallSummaryCard: React.FC<CallSummaryCardProps> = ({ summary }) => 
           <span className="text-[10px] font-semibold text-stone-400 uppercase tracking-wider block mb-1">
             Detected Intent
           </span>
-          <span className="font-semibold text-emerald-900 font-mono">{summary.customer_intent}</span>
+          <span className="font-semibold text-emerald-900 font-mono">
+            {summary.customer_intent === "UNKNOWN" ? "Out-of-scope request" : summary.customer_intent}
+          </span>
         </div>
 
         <div className="p-3 bg-stone-50 rounded-xl border border-stone-100">

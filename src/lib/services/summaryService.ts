@@ -108,8 +108,8 @@ export function generateDeterministicSummary(
 
   // 2. Order Cancellation Check
   if (lowerCust.includes("cancel") || lowerCust.includes("cancellation")) {
-    const mentions101Cancel = lowerCust.includes("cancel") && (lowerCust.includes("ord-101") || lowerCust.includes("101") || (primaryOrderId === "ORD-101" && !lowerCust.includes("ord-102") && !lowerCust.includes("ord-103")));
-    const mentions103Cancel = lowerCust.includes("cancel") && (lowerCust.includes("ord-103") || lowerCust.includes("103"));
+    const mentions101Cancel = lowerCust.includes("ord-101") || lowerCust.includes("101") || (primaryOrderId === "ORD-101" && !lowerCust.includes("ord-102") && !lowerCust.includes("ord-103"));
+    const mentions103Cancel = lowerCust.includes("ord-103") || lowerCust.includes("103");
 
     if (mentions101Cancel || (lowerAria.includes("cannot be cancelled") && lowerAria.includes("refuse delivery"))) {
       topics.push({
@@ -119,15 +119,19 @@ export function generateDeterministicSummary(
         action: "Evaluated cancellation eligibility for ORD-101",
         detail: "Informed customer that ORD-101 cannot be cancelled as it is Out for Delivery; advised doorstep refusal",
       });
-    } else if (mentions103Cancel || lowerAria.includes("eligible for cancellation")) {
+    }
+
+    if (mentions103Cancel || lowerAria.includes("eligible for cancellation") || (lowerAria.includes("ord-103") && lowerAria.includes("processing"))) {
       topics.push({
         intent: "ORDER_CANCELLATION",
         orderId: "ORD-103",
         resolved: true,
         action: "Checked cancellation eligibility for ORD-103",
-        detail: "Confirmed ORD-103 is in Processing status and eligible for cancellation",
+        detail: "Verified ORD-103 is in Processing status and eligible for cancellation; advised cancellation process",
       });
-    } else {
+    }
+
+    if (!mentions101Cancel && !mentions103Cancel) {
       topics.push({
         intent: "ORDER_CANCELLATION",
         orderId: primaryOrderId,
@@ -140,8 +144,8 @@ export function generateDeterministicSummary(
 
   // 3. Return / Refund Check
   if (lowerCust.includes("return") || lowerCust.includes("refund")) {
-    const mentions102Return = lowerCust.includes("return") && (lowerCust.includes("ord-102") || lowerCust.includes("102") || lowerCust.includes("20 days") || lowerCust.includes("opened"));
-    if (mentions102Return || lowerAria.includes("exceeds our 7-day") || lowerAria.includes("cannot accept returns")) {
+    const mentions102Return = lowerCust.includes("ord-102") || lowerCust.includes("102") || lowerCust.includes("20 days") || lowerCust.includes("opened");
+    if (mentions102Return || lowerAria.includes("exceeds our 7-day") || lowerAria.includes("cannot accept returns") || lowerAria.includes("outside the 7-day")) {
       topics.push({
         intent: "RETURN_REQUEST",
         orderId: "ORD-102",
@@ -227,7 +231,7 @@ export function generateDeterministicSummary(
       intent: "UNKNOWN",
       resolved: false, // External non-skincare request cannot be fulfilled by Aura
       action: "Identified out-of-scope customer request (e.g., external travel/flight)",
-      detail: "Politely declined external non-skincare booking as unsupported",
+      detail: "Politely declined external non-skincare request as unsupported",
     });
   }
 
@@ -248,9 +252,18 @@ export function generateDeterministicSummary(
   // Derive Actions Taken from all detected topics (deduplicated)
   const actionsTaken = Array.from(new Set(topics.map((t) => t.action)));
 
+  // Aggregate all relevant touched order IDs across topics and transcript
+  const allTouchedOrderIds = Array.from(
+    new Set([
+      ...allMentionedOrderIds,
+      ...topics.map((t) => t.orderId).filter((id): id is string => Boolean(id)),
+    ])
+  );
+  const combinedOrderIdLabel = allTouchedOrderIds.length > 0 ? allTouchedOrderIds.join(", ") : primaryOrderId;
+
   // Derive Resolution Status:
-  // If ANY meaningful customer topic was unresolved or failed (e.g. ORD-999 lookup failed, flight request, or damaged awaiting photos),
-  // resolution_status must reflect that and NOT be marked blanket RESOLVED.
+  // Distinguish unresolved customer requests (e.g. ORD-999 lookup failed, flight request, or damaged awaiting photos)
+  // from requests where policies were safely enforced or refused (e.g. cancellation rejected for ORD-101, return refused for ORD-102).
   const hasUnresolvedTopic = topics.some((t) => !t.resolved);
   const allResolved = topics.every((t) => t.resolved);
   const anyPolicyExplained = topics.some(
@@ -278,8 +291,8 @@ export function generateDeterministicSummary(
   // Construct Outcome
   let outcome = "";
   if (hasUnresolvedTopic) {
-    const failedTopic = topics.find((t) => !t.resolved);
-    outcome = `Customer had multiple requests. Some requests remained unresolved (${failedTopic?.detail || "unsupported request"}).`;
+    const failedTopics = topics.filter((t) => !t.resolved);
+    outcome = `Customer had multiple requests. Some requests remained unresolved (${failedTopics.map((f) => f.detail).join("; ")}).`;
   } else if (topics.length > 1) {
     outcome = `Handled multiple customer inquiries: ${topics.map((t) => t.detail).join(". ")}.`;
   } else {
@@ -291,18 +304,28 @@ export function generateDeterministicSummary(
       ? `Customer had multiple inquiries: ${topics.map((t) => t.intent.replace(/_/g, " ")).join(", ")}.`
       : primaryTopic.detail;
 
+  // Follow-up determination: avoid showing contradictory wording such as UNRESOLVED alongside "No follow-up needed"
+  const isDamagedPending = topics.some((t) => t.intent === "DAMAGED_PRODUCT");
+  const followUpRequired = isDamagedPending || (hasUnresolvedTopic && resolutionStatus === "UNRESOLVED");
+  let followUpDetails: string | undefined = undefined;
+  if (isDamagedPending) {
+    followUpDetails = "Awaiting customer photos at support@auraskincare.in for replacement processing.";
+  } else if (followUpRequired) {
+    const unresolvedNames = topics.filter((t) => !t.resolved).map((t) => t.detail).join("; ");
+    followUpDetails = `Resolution pending on customer requests: ${unresolvedNames}.`;
+  }
+
   return {
     call_id: callId,
     customer_intent: primaryIntent,
     customer_issue: customerIssue,
-    order_id: primaryOrderId,
+    order_id: combinedOrderIdLabel,
+    order_ids: allTouchedOrderIds,
     actions_taken: actionsTaken,
     resolution_status: resolutionStatus,
     outcome,
-    follow_up_required: topics.some((t) => t.intent === "DAMAGED_PRODUCT"),
-    follow_up_details: topics.some((t) => t.intent === "DAMAGED_PRODUCT")
-      ? "Awaiting customer photos at support@auraskincare.in for replacement processing."
-      : undefined,
+    follow_up_required: followUpRequired,
+    follow_up_details: followUpDetails,
     call_summary: summaryText,
     transcript: history.map((h) => ({
       sender: h.sender,
@@ -353,6 +376,7 @@ export async function generateCallSummary(
   "customer_intent": "ORDER_TRACKING" | "ORDER_CANCELLATION" | "RETURN_REQUEST" | "DAMAGED_PRODUCT" | "SHIPPING_DELIVERY" | "PAYMENT_COD" | "PRODUCT_INQUIRY" | "GENERAL_INQUIRY" | "UNKNOWN",
   "customer_issue": string,
   "order_id": string or null,
+  "order_ids": string[] optional,
   "actions_taken": string[],
   "resolution_status": "RESOLVED" | "POLICY_EXPLAINED" | "ESCALATED" | "INFO_REQUESTED" | "UNRESOLVED",
   "outcome": string,
@@ -361,10 +385,12 @@ export async function generateCallSummary(
   "call_summary": string
 }
 CRITICAL RULES:
-- Include the primary intent and meaningful secondary topics discussed across the entire call (e.g., tracking an order, return refusals, lookup failures for non-existent orders, or unsupported external requests like flights/hotels).
-- Mark resolution_status as "UNRESOLVED" if ANY customer request remained failed, not found (e.g. order ID not found in database), out-of-scope/unsupported (e.g. flight booking), or unanswered. Do NOT mark the call blanket "RESOLVED" if any request was unresolved.
+- Include the primary intent and meaningful secondary topics discussed across the entire call (e.g., tracking an order, return refusals, lookup failures for non-existent orders, checking cancellation eligibility for ORD-103, or unsupported external requests like flights/hotels).
+- In the "order_id" field, include all relevant order IDs touched during the call separated by commas (e.g. "ORD-101, ORD-102, ORD-103").
+- Distinguish unresolved customer requests (failed lookups, pending photos, unsupported topics) from requests where policies were correctly explained or safely refused.
 - If policy limits were explained to refuse an ineligible cancellation or return (e.g. ORD-102 return refused past 7 days, or ORD-101 out for delivery), set resolution_status to "POLICY_EXPLAINED" (or "UNRESOLVED" if another request failed).
-- Preserve accurate order IDs and outcomes for each discussed order. Never claim an order was cancelled or returned unless explicitly confirmed in the transcript.
+- Do not show contradictory wording such as "UNRESOLVED" alongside "No follow-up needed".
+- Never claim an order was cancelled or returned unless explicitly confirmed in the transcript.
 - Base the summary strictly on the actual transcript.`,
     });
 

@@ -127,7 +127,16 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # Optional: Next.js telemetry
 NEXT_TELEMETRY_DISABLED=1
 ```
-> **Note**: Even if no Gemini API key is configured or quota is exhausted, Aria falls back to the internal deterministic policy & catalog engine without failing.
+> **Note on Gemini Configuration**: If `GEMINI_API_KEY` is absent, empty, or invalid, Aria operates seamlessly on the deterministic fallback engine and reports `"geminiConfigured": false` at `/api/health`. To enable server-side Gemini 1.5 Flash in Vercel production:
+> 1. Go to your **Vercel Project Dashboard → Settings → Environment Variables**.
+> 2. Add `GEMINI_API_KEY` with your Google AI Studio API key for the **Production** environment.
+> 3. Trigger a redeployment. `/api/health` will then report `"geminiConfigured": true`.
+
+### Browser Speech Voice Limitations
+Browser speech synthesis voices depend on the operating system and browser installed on the customer's machine:
+- The application automatically discovers installed voices and prioritizes Indian English (`en-IN`) female voices, specifically **Microsoft Heera** or **Google Neerja**.
+- If an Indian English voice is not installed on the user's operating system, the application falls back safely to a female English voice such as **Microsoft Zira (en-US)** or an available system voice.
+- An Indian accent is therefore **not guaranteed** across all client machines, as the browser cannot synthesize voices that are not installed on the host operating system.
 
 ### Running Locally
 ```bash
