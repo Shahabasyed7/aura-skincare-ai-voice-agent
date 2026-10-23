@@ -44,6 +44,9 @@ export interface LLMResponse {
   error?: string;
 }
 
+export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+export const GEMINI_TIMEOUT_MS = 4500;
+
 export async function generateAriaResponse(
   userMessage: string,
   contextText: string,
@@ -60,8 +63,9 @@ export async function generateAriaResponse(
   }
 
   try {
+    const modelName = DEFAULT_GEMINI_MODEL;
     const model = client.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: modelName,
       generationConfig: {
         maxOutputTokens: 120,
         temperature: 0.3,
@@ -82,14 +86,23 @@ export async function generateAriaResponse(
       ? `[SYSTEM VERIFIED DATA & POLICY RULES]:\n${contextText}\n\n[CUSTOMER QUERY]:\n${userMessage}\n\nProvide Aria's 1-2 sentence spoken reply:`
       : userMessage;
 
-    const result = await chat.sendMessage(promptWithContext);
+    // Timeout guard to prevent blocking voice turns when rate limited or network stalled
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Gemini request timed out after ${GEMINI_TIMEOUT_MS}ms`)), GEMINI_TIMEOUT_MS)
+    );
+
+    const result = await Promise.race([
+      chat.sendMessage(promptWithContext),
+      timeoutPromise,
+    ]);
+
     const text = result.response.text()?.trim();
 
     if (text) {
       return {
         reply: text,
         isFallback: false,
-        modelUsed: "gemini-1.5-flash",
+        modelUsed: modelName,
       };
     }
 
@@ -100,9 +113,9 @@ export async function generateAriaResponse(
     };
   } catch (err: unknown) {
     const errMessage = (err as Error)?.message || String(err);
-    console.error("Gemini API call failed (safe server log):", {
-      message: errMessage,
-      type: (err as Error)?.name,
+    // Safe logging without exposing keys or credentials
+    console.warn("[Aria Gemini Free-Quota / Error Fallback] Switching to deterministic engine:", {
+      error: errMessage.slice(0, 160),
     });
     return {
       reply: "",

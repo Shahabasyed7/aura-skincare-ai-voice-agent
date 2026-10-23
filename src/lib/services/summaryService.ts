@@ -365,7 +365,7 @@ export async function generateCallSummary(
 
   try {
     const model = client.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
       generationConfig: {
         responseMimeType: "application/json",
         temperature: 0.2,
@@ -399,7 +399,16 @@ CRITICAL RULES:
       .join("\n");
 
     const prompt = `Call ID: ${callId}\nConversation Transcript:\n${transcriptStr}\n\nDetected Order ID: ${detectedOrderId || "None"}\n\nGenerate accurate JSON summary:`;
-    const result = await model.generateContent(prompt);
+    
+    // Timeout guard for summary generation
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Gemini summary generation timed out")), 5000)
+    );
+
+    const result = await Promise.race([
+      model.generateContent(prompt),
+      timeoutPromise,
+    ]);
     const text = result.response.text();
     const parsed = JSON.parse(text);
 
