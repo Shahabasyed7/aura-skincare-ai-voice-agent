@@ -1,15 +1,18 @@
 "use client";
 
 import React, { useRef, useEffect, useState } from "react";
-import { TranscriptMessage, VoiceState } from "@/types";
-import { ArrowUp, PhoneOff, Mic, AlertCircle } from "lucide-react";
+import { TranscriptMessage, VoiceState, MockOrder } from "@/types";
+import { ArrowUp, PhoneOff, Mic, AlertCircle, Package, Truck, CheckCircle2, Clock } from "lucide-react";
 import { VoiceOrb } from "@/components/VoiceOrb";
+import { VoiceDiagnostic } from "@/lib/services/voiceService";
 
 interface ActiveConversationViewProps {
   voiceState: VoiceState;
   transcript: TranscriptMessage[];
   currentSpeakerText: string;
   errorMessage: string | null;
+  activeOrderCard?: MockOrder | null;
+  voiceDiagnostic?: VoiceDiagnostic | null;
   onEndCall: () => void;
   onSendMessage: (text: string) => Promise<void>;
   isSpeechSupported: boolean;
@@ -20,6 +23,7 @@ export const ActiveConversationView: React.FC<ActiveConversationViewProps> = ({
   transcript,
   currentSpeakerText,
   errorMessage,
+  voiceDiagnostic,
   onEndCall,
   onSendMessage,
   isSpeechSupported,
@@ -32,11 +36,11 @@ export const ActiveConversationView: React.FC<ActiveConversationViewProps> = ({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [transcript, currentSpeakerText]);
+  }, [transcript, currentSpeakerText, voiceState]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || voiceState === "thinking" || voiceState === "responding") return;
     onSendMessage(inputText.trim());
     setInputText("");
   };
@@ -46,28 +50,36 @@ export const ActiveConversationView: React.FC<ActiveConversationViewProps> = ({
     switch (voiceState) {
       case "listening":
         return {
-          title: "Aria is listening",
+          title: "Listening",
           desc: currentSpeakerText ? `"${currentSpeakerText}"` : "Speak naturally into your microphone",
           badgeColor: "bg-[#DCE7D8] text-[#29372D]",
         };
       case "thinking":
         return {
-          title: "Consulting Aura care policies",
-          desc: "Checking order & brand guidance...",
+          title: "Thinking",
+          desc: "Consulting Aura policies & order lookup...",
           badgeColor: "bg-[#C9D4B5] text-[#29372D]",
         };
       case "speaking":
+      case "responding":
         return {
-          title: "Aria is responding",
-          desc: "Listening is softly paused to prevent echo",
+          title: "Responding",
+          desc: "Aria is speaking aloud. Mic paused to avoid feedback.",
           badgeColor: "bg-[#6B8068] text-white",
         };
       case "error":
         return {
-          title: "Microphone attention needed",
+          title: "Error",
           desc: errorMessage || "Please check browser mic access",
+          badgeColor: "bg-rose-100 text-rose-800",
+        };
+      case "ended":
+        return {
+          title: "Call ended",
+          desc: "Generating call summary...",
           badgeColor: "bg-stone-200 text-[#29372D]",
         };
+      case "idle":
       default:
         return {
           title: "Connected",
@@ -99,6 +111,11 @@ export const ActiveConversationView: React.FC<ActiveConversationViewProps> = ({
             <p className="text-xs text-[#29372D]/70 mt-0.5 max-w-xs truncate">
               {stateMeta.desc}
             </p>
+            {voiceDiagnostic && (
+              <span className="text-[10px] text-[#29372D]/50 block mt-0.5">
+                Voice: {voiceDiagnostic.name} ({voiceDiagnostic.lang})
+              </span>
+            )}
           </div>
         </div>
 
@@ -144,6 +161,69 @@ export const ActiveConversationView: React.FC<ActiveConversationViewProps> = ({
               >
                 {msg.text}
               </div>
+
+              {/* Render Order Card if this turn retrieved an order */}
+              {isAria && msg.order && (
+                <div className="mt-2 w-full max-w-[85%] sm:max-w-[75%] bg-white rounded-2xl p-4 border border-[#DCE7D8] shadow-xs">
+                  <div className="flex items-center justify-between pb-2 border-b border-[#DCE7D8]/60">
+                    <div className="flex items-center gap-2">
+                      <Package className="w-4 h-4 text-[#6B8068]" />
+                      <span className="font-mono font-bold text-xs text-[#29372D]">
+                        {msg.order.order_id}
+                      </span>
+                    </div>
+                    <span
+                      className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+                        msg.order.status === "Out for Delivery"
+                          ? "bg-amber-100 text-amber-800"
+                          : msg.order.status === "Delivered"
+                          ? "bg-emerald-100 text-emerald-800"
+                          : "bg-[#DCE7D8] text-[#29372D]"
+                      }`}
+                    >
+                      {msg.order.status}
+                    </span>
+                  </div>
+
+                  <div className="mt-2.5 space-y-1.5 text-xs text-[#29372D]">
+                    <div className="flex justify-between">
+                      <span className="text-[#29372D]/60">Product</span>
+                      <span className="font-medium text-right">{msg.order.product_name}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#29372D]/60">Customer</span>
+                      <span>{msg.order.customer_name}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-[#29372D]/60">Amount</span>
+                      <span>₹{msg.order.amount}</span>
+                    </div>
+
+                    {msg.order.courier && msg.order.tracking_id && (
+                      <div className="flex items-center justify-between pt-1 text-[11px] text-[#6B8068] font-medium">
+                        <span className="flex items-center gap-1">
+                          <Truck className="w-3.5 h-3.5" /> {msg.order.courier}
+                        </span>
+                        <span className="font-mono">ID: {msg.order.tracking_id}</span>
+                      </div>
+                    )}
+
+                    {msg.order.expected_delivery && (
+                      <div className="flex items-center gap-1.5 pt-1 text-[11px] text-amber-800 font-medium">
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>Expected: {msg.order.expected_delivery}</span>
+                      </div>
+                    )}
+
+                    {msg.order.delivery_date_description && (
+                      <div className="flex items-center gap-1.5 pt-1 text-[11px] text-emerald-800">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>{msg.order.delivery_date_description}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
@@ -159,6 +239,19 @@ export const ActiveConversationView: React.FC<ActiveConversationViewProps> = ({
             </div>
           </div>
         )}
+
+        {/* Thinking Indicator */}
+        {voiceState === "thinking" && (
+          <div className="flex flex-col items-start">
+            <span className="text-[10px] font-medium tracking-wide uppercase text-[#29372D]/40 mb-1 px-1">
+              Aria
+            </span>
+            <div className="bg-[#FAF8F2] border border-[#DCE7D8] rounded-2xl rounded-tl-sm px-4 py-2.5 flex items-center gap-2 text-xs text-[#29372D]/70">
+              <span className="w-2 h-2 rounded-full bg-[#6B8068] animate-ping" />
+              <span>Thinking & checking order records...</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Secondary text input for customers unable to speak or in noisy areas */}
@@ -169,13 +262,14 @@ export const ActiveConversationView: React.FC<ActiveConversationViewProps> = ({
         <input
           type="text"
           value={inputText}
+          disabled={voiceState === "thinking"}
           onChange={(e) => setInputText(e.target.value)}
-          placeholder="Type here if you prefer not to speak (e.g., Where is ORD-101?)..."
-          className="flex-1 bg-white border border-[#DCE7D8] rounded-full px-5 py-2.5 text-xs text-[#29372D] placeholder-[#29372D]/40 focus:outline-none focus:ring-1 focus:ring-[#6B8068] focus:border-[#6B8068] transition-all"
+          placeholder={voiceState === "thinking" ? "Aria is thinking..." : "Type here if you prefer not to speak (e.g., Where is ORD-101?)..."}
+          className="flex-1 bg-white border border-[#DCE7D8] rounded-full px-5 py-2.5 text-xs text-[#29372D] placeholder-[#29372D]/40 focus:outline-none focus:ring-1 focus:ring-[#6B8068] focus:border-[#6B8068] disabled:opacity-50 transition-all"
         />
         <button
           type="submit"
-          disabled={!inputText.trim()}
+          disabled={!inputText.trim() || voiceState === "thinking"}
           className="w-9 h-9 rounded-full bg-[#6B8068] hover:bg-[#576A54] disabled:opacity-40 text-white flex items-center justify-center transition-all flex-shrink-0 shadow-sm"
           title="Send message"
         >

@@ -1,5 +1,5 @@
 import { CustomerIntent, TranscriptMessage, MockOrder } from "@/types";
-import { get_order_details, extractOrderIdFromText } from "@/lib/services/orderService";
+import { get_order_details, extractOrderIdFromText, normalizeOrderId } from "@/lib/services/orderService";
 import {
   calculateShippingFee,
   checkCancellationEligibility,
@@ -8,24 +8,53 @@ import {
   checkCodEligibility,
 } from "@/lib/services/policyService";
 import { generateAriaResponse } from "@/lib/ai/geminiAdapter";
+import {
+  AURA_PRODUCT_CATALOG,
+  identifyProductFromContext,
+  formatProductContext,
+  getGeneralCatalogIntroduction,
+  ProductCatalogEntry,
+} from "@/lib/data/productCatalog";
 
 export interface OrchestrationResult {
   reply: string;
   intent: CustomerIntent;
   detectedOrderId: string | null;
   toolResult?: {
+    success?: boolean;
     order?: MockOrder;
     policyExplanation?: string;
+    product?: ProductCatalogEntry;
   };
   usedFallback: boolean;
 }
 
 /**
- * Detect customer intent deterministically from user utterances
+ * Detect customer intent deterministically from user utterances and multi-turn context
  */
-export function classifyIntent(text: string): CustomerIntent {
+export function classifyIntent(
+  text: string,
+  previousTurns: Array<{ sender: "customer" | "aria"; text: string }> = []
+): CustomerIntent {
   const lower = text.toLowerCase();
 
+  // 1. Out of scope / external requests (e.g., "book a flight to Goa")
+  if (
+    lower.includes("flight") ||
+    lower.includes("hotel") ||
+    lower.includes("train") ||
+    lower.includes("movie") ||
+    lower.includes("cab") ||
+    lower.includes("taxi") ||
+    lower.includes("weather") ||
+    lower.includes("cricket") ||
+    lower.includes("pizza") ||
+    lower.includes("burger")
+  ) {
+    return "UNKNOWN";
+  }
+
+  // 2. Order Tracking
   if (
     lower.includes("track") ||
     lower.includes("where is my order") ||
@@ -38,15 +67,17 @@ export function classifyIntent(text: string): CustomerIntent {
     return "ORDER_TRACKING";
   }
 
+  // 3. Order Cancellation
   if (
     lower.includes("cancel") ||
     lower.includes("stop order") ||
-    lower.includes("don't want") ||
-    lower.includes("do not want this order")
+    lower.includes("cancellation") ||
+    lower.includes("revoke order")
   ) {
     return "ORDER_CANCELLATION";
   }
 
+  // 4. Return Request
   if (
     lower.includes("return") ||
     lower.includes("refund") ||
@@ -56,6 +87,7 @@ export function classifyIntent(text: string): CustomerIntent {
     return "RETURN_REQUEST";
   }
 
+  // 5. Damaged Product
   if (
     lower.includes("damage") ||
     lower.includes("broken") ||
@@ -67,6 +99,7 @@ export function classifyIntent(text: string): CustomerIntent {
     return "DAMAGED_PRODUCT";
   }
 
+  // 6. Shipping & Delivery rules
   if (
     lower.includes("shipping") ||
     lower.includes("delivery fee") ||
@@ -78,6 +111,7 @@ export function classifyIntent(text: string): CustomerIntent {
     return "SHIPPING_DELIVERY";
   }
 
+  // 7. Cash on Delivery (COD)
   if (
     lower.includes("cod") ||
     lower.includes("cash on delivery") ||
@@ -88,30 +122,166 @@ export function classifyIntent(text: string): CustomerIntent {
     return "PAYMENT_COD";
   }
 
-  if (
-    lower.includes("vitamin c") ||
-    lower.includes("serum") ||
-    lower.includes("sunscreen") ||
-    lower.includes("face wash") ||
-    lower.includes("toner") ||
-    lower.includes("product") ||
-    lower.includes("ingredients")
-  ) {
+  // 8. If an order ID is given (e.g. "ORD-101", "101"):
+  const hasOrderId = Boolean(extractOrderIdFromText(text, true));
+  if (hasOrderId) {
+    const lastAria = [...previousTurns].reverse().find((t) => t.sender === "aria")?.text.toLowerCase() || "";
+    const lastCustomer = [...previousTurns].reverse().find((t) => t.sender === "customer")?.text.toLowerCase() || "";
+
+    if (lastCustomer.includes("cancel") || lastAria.includes("cancel")) {
+      return "ORDER_CANCELLATION";
+    }
+    if (lastCustomer.includes("return") || lastAria.includes("return")) {
+      return "RETURN_REQUEST";
+    }
+    return "ORDER_TRACKING";
+  }
+
+  // 9. Product Inquiry: Direct mentions, general skincare product discovery, or anaphora in an established conversation
+  const directProduct = identifyProductFromContext(text, []);
+  if (directProduct) {
     return "PRODUCT_INQUIRY";
   }
 
+  // Broad product discovery / questions about Aura's products or skincare lineup
+  // Handles natural phrases and speech recognition transcript variations:
+  // "can I get more information about skin care products of Arya", "can you help me with product questions", "I want to knows can care products"
+  const isBroadProductInquiry =
+    lower.includes("skincare") ||
+    lower.includes("skin care") ||
+    lower.includes("can care") || // common STT phonetic error for "skin care"
+    lower.includes("product") ||
+    lower.includes("products") ||
+    lower.includes("what do you sell") ||
+    lower.includes("what do you offer") ||
+    lower.includes("catalog") ||
+    lower.includes("lineup") ||
+    lower.includes("routine") ||
+    lower.includes("serums") ||
+    lower.includes("creams") ||
+    lower.includes("sunscreen") ||
+    lower.includes("face wash") ||
+    lower.includes("cleanser") ||
+    lower.includes("toner");
+
+  if (isBroadProductInquiry) {
+    return "PRODUCT_INQUIRY";
+  }
+
+  // Check if this is an anaphora follow-up to a previous product turn
+  const contextProduct = identifyProductFromContext(text, previousTurns);
+  if (contextProduct) {
+    return "PRODUCT_INQUIRY";
+  }
+
+  // 10. General greetings / introductions (only when no specific intent or context is given)
   if (
     lower.includes("hello") ||
     lower.includes("hi") ||
     lower.includes("hey") ||
-    lower.includes("who are you") ||
-    lower.includes("aura") ||
-    lower.includes("help")
+    lower.includes("namaste") ||
+    lower.includes("who are you")
   ) {
     return "GENERAL_INQUIRY";
   }
 
   return "UNKNOWN";
+}
+
+/**
+ * Intelligent deterministic answer generator for product catalog queries.
+ * Handles:
+ * - General overview ("Tell me about Green Tea Face Wash")
+ * - Ingredients ("What ingredients does it contain?")
+ * - Usage & frequency ("How often should I use it?")
+ * - Compatibility ("Can I use it with Vitamin C?")
+ * - Price & bundle information ("What about its price?")
+ * - Routine placement ("When do I apply it?")
+ */
+export function getProductDeterministicAnswer(product: ProductCatalogEntry, query: string): string {
+  const lower = query.toLowerCase();
+
+  // 1. Ingredients inquiry
+  if (lower.includes("ingredient") || lower.includes("contain") || lower.includes("formulated with") || lower.includes("what is inside")) {
+    // Check if customer asked about a specific ingredient that might not be in the catalog
+    const unverifiedCandidates = ["retinol", "salicylic acid", "snail mucin", "collagen", "peptides", "paraben", "sulfate", "fragrance"];
+    const askedCandidate = unverifiedCandidates.find((c) => lower.includes(c));
+    if (askedCandidate) {
+      if (product.ingredients.length === 0) {
+        return "I'm sorry, I don't have verified information about that detail right now. I can help with the product information currently available in our catalog.";
+      }
+      const match = product.ingredients.find((ing) => ing.name.toLowerCase().includes(askedCandidate));
+      if (!match) {
+        return `Our ${product.name} does not contain ${askedCandidate}. Its verified key ingredients are ${product.ingredients.map((ing) => ing.name).join(", ")}.`;
+      }
+    }
+    if (product.ingredients.length === 0) {
+      return "I'm sorry, I don't have verified information about that detail right now. I can help with the product information currently available in our catalog.";
+    }
+    const ingSummary = product.ingredients.map((ing) => `${ing.name} for ${ing.function.toLowerCase()}`).join(", ");
+    return `Our ${product.name} is formulated with ${ingSummary}.`;
+  }
+
+  // 2. Frequency & how often to use
+  if (lower.includes("how often") || lower.includes("frequency") || lower.includes("how many times") || lower.includes("daily")) {
+    return `You should use the ${product.name} ${product.directions.frequency.toLowerCase()} (${product.directions.routinePlacement.toLowerCase()}).`;
+  }
+
+  // 3. Directions / how to use / routine placement
+  if (lower.includes("how to use") || lower.includes("directions") || lower.includes("apply") || lower.includes("how do i use") || lower.includes("routine")) {
+    return `${product.directions.instructions} It fits as ${product.directions.routinePlacement.toLowerCase()}`;
+  }
+
+  // 4. Compatibility (e.g., with Vitamin C, sunscreen, or other products)
+  if (
+    lower.includes("use it with") ||
+    lower.includes("pair") ||
+    lower.includes("combine") ||
+    lower.includes("with vitamin c") ||
+    lower.includes("with sunscreen") ||
+    lower.includes("compatible")
+  ) {
+    if (lower.includes("vitamin c")) {
+      if (product.id === "green-tea-face-wash") {
+        return "Yes, absolutely! The Green Tea Face Wash cleanses skin gently, making it an ideal pre-step before you apply your Vitamin C Serum.";
+      }
+      if (product.id === "toner") {
+        return "Yes, you can use our Toner before applying the Vitamin C Serum.";
+      }
+      if (product.id === "hydrating-sunscreen") {
+        return "Yes, our Hydrating Sunscreen SPF 50 can be applied after your Vitamin C Serum for sun protection.";
+      }
+    }
+    return `Yes, ${product.name} is compatible with ${product.compatibility.compatibleWith.join(", ")}. ${product.compatibility.notes}`;
+  }
+
+  // 5. Price & bundle info
+  if (lower.includes("price") || lower.includes("cost") || lower.includes("how much") || lower.includes("rate") || lower.includes("mrp")) {
+    return `${product.name} is ${product.priceDescription}`;
+  }
+
+  // 6. Purchase intent ("I want to buy it", "how do I buy this", "order this")
+  if (lower.includes("buy") || lower.includes("purchase") || lower.includes("order this") || lower.includes("checkout")) {
+    if (product.id === "green-tea-face-wash" || product.id === "toner") {
+      return `Our ${product.name} is available in the Green Tea Face Wash + Toner bundle for ₹850. Would you like to proceed with the bundle, or are you looking for an individual product? We support online payment and Cash on Delivery up to ₹2,500.`;
+    }
+    return `You can order ${product.name} for ${product.priceDescription}. We offer free delivery on orders above ₹499 and Cash on Delivery up to ₹2,500. Would you like me to guide you through checkout?`;
+  }
+
+  // 7. Skin type & sensitivity
+  if (lower.includes("skin type") || lower.includes("sensitive") || lower.includes("oily") || lower.includes("acne") || lower.includes("safe for")) {
+    return `${product.name} is formulated for ${product.skinTypeSuitability.join(", ")}. We always suggest a quick patch test behind the ear prior to first full application.`;
+  }
+
+  // 8. General overview / default product explanation
+  let answer = `Our ${product.name} is ${product.description} It ${product.purposeAndBenefits.join(", ").toLowerCase()}.`;
+  if (product.priceDescription) {
+    answer += ` It is ${product.priceDescription.toLowerCase()}.`;
+  }
+  if (product.bundleReference) {
+    answer += ` It is also featured in our ${product.bundleReference}.`;
+  }
+  return answer;
 }
 
 /**
@@ -121,7 +291,12 @@ export function classifyIntent(text: string): CustomerIntent {
 export function getDeterministicReply(
   intent: CustomerIntent,
   orderId: string | null,
-  toolData?: { order?: MockOrder; error?: string }
+  toolData?: {
+    order?: MockOrder;
+    error?: string;
+    product?: ProductCatalogEntry;
+    userQuery?: string;
+  }
 ): string {
   if (orderId && toolData?.error) {
     return toolData.error;
@@ -132,10 +307,10 @@ export function getDeterministicReply(
       if (toolData?.order) {
         const o = toolData.order;
         if (o.status === "Out for Delivery") {
-          return `Your order ${o.order_id} for ${o.product_name} is out for delivery with ${o.courier} (Tracking: ${o.tracking_id}) and is expected ${o.expected_delivery}.`;
+          return `Your order ${o.order_id} for ${o.product_name} is out for delivery with ${o.courier} (Tracking ID: ${o.tracking_id}) and is expected ${o.expected_delivery}.`;
         }
         if (o.status === "Delivered") {
-          return `Your order ${o.order_id} for ${o.product_name} was delivered by ${o.courier} ${o.delivery_date_description}.`;
+          return `Your order ${o.order_id} for ${o.product_name} was delivered by ${o.courier} (Tracking ID: ${o.tracking_id}) ${o.delivery_date_description}.`;
         }
         if (o.status === "Processing") {
           return `Your order ${o.order_id} for ${o.product_name} is currently processing and will be dispatched within 3–5 business days.`;
@@ -162,7 +337,7 @@ export function getDeterministicReply(
     }
 
     case "DAMAGED_PRODUCT": {
-      return "I'm so sorry to hear that. Damaged products must be reported within 48 hours of delivery with photos sent to support@auraskincare.in for immediate replacement.";
+      return "I'm so sorry to hear that. Damaged products must be reported within 48 hours of delivery with photos sent to support@auraskincare.in for replacement assistance.";
     }
 
     case "SHIPPING_DELIVERY": {
@@ -174,7 +349,10 @@ export function getDeterministicReply(
     }
 
     case "PRODUCT_INQUIRY": {
-      return "Aura Skincare crafts organic, botanical formulas including our 10% Vitamin C Serum, Hydrating Sunscreen SPF 50, and Green Tea Face Wash. How can I help you with our products?";
+      if (toolData?.product && toolData.userQuery) {
+        return getProductDeterministicAnswer(toolData.product, toolData.userQuery);
+      }
+      return getGeneralCatalogIntroduction();
     }
 
     case "GENERAL_INQUIRY": {
@@ -182,31 +360,142 @@ export function getDeterministicReply(
     }
 
     default:
-      return "I am here to help you with order tracking, cancellations, returns, shipping, or product details. Could you please specify your question or provide your order ID?";
+      return "I can help you with order tracking, cancellations, returns, shipping, and product questions. Aura Skincare cannot assist with requests outside our store policies.";
   }
 }
 
 /**
  * Main orchestrator: extracts intent, executes deterministic policy/order tools,
- * enriches context, and synthesizes 1-2 sentence spoken reply via Gemini (or fallback).
+ * enriches context with real product knowledge and order records,
+ * and synthesizes 1-2 sentence spoken reply via Gemini (or deterministic fallback).
  */
 export async function orchestrateAgentTurn(
   message: string,
   history: Array<{ sender: "customer" | "aria"; text: string }> = []
 ): Promise<OrchestrationResult> {
-  const intent = classifyIntent(message);
-  const detectedOrderId = extractOrderIdFromText(message);
+  const lowerMsg = message.toLowerCase();
+
+  // 1. Handle out of scope explicitly
+  if (
+    lowerMsg.includes("flight") ||
+    lowerMsg.includes("hotel") ||
+    lowerMsg.includes("goa") ||
+    lowerMsg.includes("cab") ||
+    lowerMsg.includes("taxi") ||
+    lowerMsg.includes("train") ||
+    lowerMsg.includes("weather") ||
+    lowerMsg.includes("pizza") ||
+    lowerMsg.includes("burger")
+  ) {
+    return {
+      reply: "I can only assist with Aura Skincare orders, shipping, and skincare products. I am unable to assist with external bookings like flights or hotels.",
+      intent: "UNKNOWN",
+      detectedOrderId: null,
+      toolResult: undefined,
+      usedFallback: true,
+    };
+  }
+
+  // 1b. Handle genuinely unclear speech or ambiguous noise
+  const cleanTrimmed = message.replace(/[^a-zA-Z0-9\s]/g, "").trim().toLowerCase();
+  const words = cleanTrimmed.split(/\s+/).filter(Boolean);
+  const isAllGarbleWords = words.length > 0 && words.every((w) => /^(uh|um|huh|what|hmm|hm|asdf|xyz|ah)$/.test(w));
+  const isTooShort = cleanTrimmed.length > 0 && cleanTrimmed.length < 3 && !/^\d+$/.test(cleanTrimmed);
+
+  if (isTooShort || isAllGarbleWords) {
+    return {
+      reply: "I didn't quite catch that. Could you please repeat your question about your order or our skincare products?",
+      intent: "UNKNOWN",
+      detectedOrderId: null,
+      toolResult: undefined,
+      usedFallback: true,
+    };
+  }
+
+  // 1c. Handle "can you repeat that?" or "pardon?"
+  const isRepeatRequest =
+    lowerMsg.includes("repeat that") ||
+    lowerMsg.includes("say that again") ||
+    lowerMsg.includes("what did you say") ||
+    lowerMsg.includes("pardon") ||
+    lowerMsg.includes("repeat please");
+
+  if (isRepeatRequest && history.length > 0) {
+    const lastAriaMessage = [...history].reverse().find((h) => h.sender === "aria");
+    if (lastAriaMessage && lastAriaMessage.text) {
+      return {
+        reply: `Certainly: ${lastAriaMessage.text}`,
+        intent: "GENERAL_INQUIRY",
+        detectedOrderId: null,
+        toolResult: undefined,
+        usedFallback: true,
+      };
+    }
+  }
+
+  // 2. Check if previous turn asked for an order number
+  const lastAriaTurn = [...history].reverse().find((h) => h.sender === "aria")?.text.toLowerCase() || "";
+  const contextIndicatesOrder =
+    lastAriaTurn.includes("order number") ||
+    lastAriaTurn.includes("order id") ||
+    lastAriaTurn.includes("share your order") ||
+    lastAriaTurn.includes("provide your order");
+
+  // Extract order ID from current utterance first
+  let detectedOrderId = extractOrderIdFromText(message, contextIndicatesOrder);
+
+  // If not in current utterance, check if an order ID was already established in recent conversation turns
+  // BUT do not carry over order ID if customer explicitly switched to general product inquiry or shipping,
+  // or if customer is asking a fresh "track my order" without specifying an ID.
+  const isFreshTrackingRequest = lowerMsg.includes("track my order") || lowerMsg.includes("where is my order") || lowerMsg.includes("check my order");
+  const hasSwitchedToProducts = Boolean(identifyProductFromContext(message, []));
+
+  if (!detectedOrderId && history.length > 0 && !hasSwitchedToProducts && !isFreshTrackingRequest) {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const turnId = extractOrderIdFromText(history[i].text, false);
+      if (turnId) {
+        detectedOrderId = turnId;
+        break;
+      }
+    }
+  }
+
+  // Classify intent using current utterance and conversation history
+  const intent = classifyIntent(message, history);
 
   let verifiedContext = "";
   let toolResult: OrchestrationResult["toolResult"] = undefined;
   let orderLookupError: string | undefined = undefined;
 
-  // Order lookup tool execution
-  if (detectedOrderId) {
+  // 3. Product Catalog context enrichment
+  let matchedProduct: ProductCatalogEntry | null = null;
+  if (intent === "PRODUCT_INQUIRY") {
+    matchedProduct = identifyProductFromContext(message, history);
+    if (matchedProduct) {
+      toolResult = { ...(toolResult || {}), product: matchedProduct };
+      verifiedContext += `${formatProductContext(matchedProduct)}\n`;
+    } else {
+      verifiedContext += `[COMPLETE AURA PRODUCT CATALOG]:\n${getGeneralCatalogIntroduction()}\nProducts available:\n1. Vitamin C Serum 30ml (₹699)\n2. Hydrating Sunscreen SPF 50 50g (₹499)\n3. Green Tea Face Wash 100ml\n4. Clarifying Toner 100ml (Face wash + Toner paired in ORD-103 bundle for ₹850)\n`;
+    }
+  }
+
+  // 4. Order lookup tool execution (application-level deterministic execution)
+  // Only look up and attach order details when the user explicitly asks about that order or provides its ID for tracking/cancellation/returns
+  const isOrderSpecificIntent = intent === "ORDER_TRACKING" || intent === "ORDER_CANCELLATION" || (intent === "RETURN_REQUEST" && Boolean(detectedOrderId));
+  if (detectedOrderId && isOrderSpecificIntent) {
     const lookup = get_order_details(detectedOrderId);
     if (lookup.success && lookup.order) {
-      toolResult = { order: lookup.order };
-      verifiedContext += `[ORDER DATA FOUND]: ID: ${lookup.order.order_id}, Customer: ${lookup.order.customer_name}, Product: ${lookup.order.product_name}, Status: ${lookup.order.status}, Amount: ₹${lookup.order.amount}. Courier: ${lookup.order.courier || "N/A"}, Tracking: ${lookup.order.tracking_id || "N/A"}, Expected: ${lookup.order.expected_delivery || lookup.order.delivery_date_description || "N/A"}.\n`;
+      toolResult = { ...(toolResult || {}), success: true, order: lookup.order };
+      verifiedContext += `[ORDER DATA RETRIEVED FROM DATABASE]:
+Order ID: ${lookup.order.order_id}
+Customer: ${lookup.order.customer_name}
+Product: ${lookup.order.product_name}
+Status: ${lookup.order.status}
+Amount: ₹${lookup.order.amount}
+Courier: ${lookup.order.courier || "N/A"}
+Tracking ID: ${lookup.order.tracking_id || "N/A"}
+Expected Delivery / Delivery Date: ${lookup.order.expected_delivery || lookup.order.delivery_date_description || "N/A"}
+Cancellation Eligible: ${lookup.order.cancellation_eligible}\n`;
 
       if (intent === "ORDER_CANCELLATION") {
         const cancelCheck = checkCancellationEligibility(lookup.order);
@@ -217,44 +506,49 @@ export async function orchestrateAgentTurn(
       }
     } else {
       orderLookupError = lookup.error;
-      verifiedContext += `[ORDER LOOKUP FAILED]: ${lookup.error}\n`;
+      verifiedContext += `[ORDER LOOKUP RESULT]: ${lookup.error}\n`;
     }
   }
 
-  // Policy context rules
+  // 5. Specific policy context rules for non-order queries
   if (intent === "SHIPPING_DELIVERY") {
-    const feeInfo = calculateShippingFee(500);
-    verifiedContext += `[DETERMINISTIC POLICY - SHIPPING]: Free shipping above ₹499. Orders ₹499 or below incur ₹50 fee. Standard delivery takes 3–5 business days.\n`;
+    verifiedContext += `[DETERMINISTIC POLICY - SHIPPING]: Free shipping above ₹499. Orders of ₹499 or below incur ₹50 fee. Standard delivery takes 3–5 business days across India.\n`;
   } else if (intent === "PAYMENT_COD") {
-    verifiedContext += `[DETERMINISTIC POLICY - COD]: COD allowed up to ₹2,500. Cash or UPI accepted at delivery.\n`;
+    verifiedContext += `[DETERMINISTIC POLICY - COD]: COD allowed up to ₹2,500. Payable by cash or UPI directly to courier.\n`;
   } else if (intent === "DAMAGED_PRODUCT") {
     const damCheck = checkDamagedReportingEligibility(12);
     verifiedContext += `[DETERMINISTIC POLICY - DAMAGED]: ${damCheck.reason}\n`;
+  } else if (intent === "RETURN_REQUEST" && !toolResult?.order) {
+    verifiedContext += `[DETERMINISTIC POLICY - RETURN]: Returns strictly allowed within 7 days of delivery only for unopened, unused products in original packaging.\n`;
   }
 
-  // Attempt generation via Gemini
+  // 6. Attempt generation via Gemini with verified catalog & order data as strict ground-truth
   const llmRes = await generateAriaResponse(message, verifiedContext, history);
+
+  const finalOrderId = isOrderSpecificIntent ? detectedOrderId : null;
 
   if (!llmRes.isFallback && llmRes.reply) {
     return {
       reply: llmRes.reply,
       intent,
-      detectedOrderId,
+      detectedOrderId: finalOrderId,
       toolResult,
       usedFallback: false,
     };
   }
 
-  // Fallback generation (deterministic, 100% policy-compliant)
+  // 7. Fallback generation (deterministic, 100% product & policy grounded)
   const fallbackReply = getDeterministicReply(intent, detectedOrderId, {
     order: toolResult?.order,
     error: orderLookupError,
+    product: matchedProduct || undefined,
+    userQuery: message,
   });
 
   return {
     reply: fallbackReply,
     intent,
-    detectedOrderId,
+    detectedOrderId: finalOrderId,
     toolResult,
     usedFallback: true,
   };

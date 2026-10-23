@@ -1,7 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { VoiceState, TranscriptMessage, CallSummary } from "@/types";
+import { VoiceState, TranscriptMessage, CallSummary, MockOrder } from "@/types";
+import {
+  initVoiceSelection,
+  getSelectedAriaVoice,
+  getVoiceDiagnostic,
+  VoiceDiagnostic,
+} from "@/lib/services/voiceService";
 
 interface UseVoiceAgentReturn {
   voiceState: VoiceState;
@@ -10,8 +16,10 @@ interface UseVoiceAgentReturn {
   currentSpeakerText: string;
   errorMessage: string | null;
   detectedOrderId: string | null;
+  activeOrderCard: MockOrder | null;
   callSummary: CallSummary | null;
   callId: string | null;
+  voiceDiagnostic: VoiceDiagnostic | null;
   startCall: () => void;
   endCall: () => void;
   sendTextMessage: (text: string) => Promise<void>;
@@ -26,19 +34,23 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
   const [currentSpeakerText, setCurrentSpeakerText] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [detectedOrderId, setDetectedOrderId] = useState<string | null>(null);
+  const [activeOrderCard, setActiveOrderCard] = useState<MockOrder | null>(null);
   const [callSummary, setCallSummary] = useState<CallSummary | null>(null);
   const [callId, setCallId] = useState<string | null>(null);
   const [isSpeechSupported, setIsSpeechSupported] = useState<boolean>(true);
+  const [voiceDiagnostic, setVoiceDiagnostic] = useState<VoiceDiagnostic | null>(null);
 
   // References to preserve instances across re-renders
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const isSpeakingRef = useRef<boolean>(false);
   const isCallActiveRef = useRef<boolean>(false);
+  const isProcessingTurnRef = useRef<boolean>(false);
+  const isRecognitionActiveRef = useRef<boolean>(false);
   const transcriptRef = useRef<TranscriptMessage[]>([]);
   const detectedOrderIdRef = useRef<string | null>(null);
 
-  // Keep ref synchronized with state for callback closures
+  // Keep refs synchronized with state
   useEffect(() => {
     isCallActiveRef.current = isCallActive;
   }, [isCallActive]);
@@ -51,7 +63,21 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
     detectedOrderIdRef.current = detectedOrderId;
   }, [detectedOrderId]);
 
-  // Check Web Speech API availability on mount
+  // Restart speech recognition safely with guards
+  const restartRecognition = useCallback(() => {
+    if (!isCallActiveRef.current || isSpeakingRef.current || isProcessingTurnRef.current) return;
+    if (recognitionRef.current && !isRecognitionActiveRef.current) {
+      try {
+        recognitionRef.current.start();
+        isRecognitionActiveRef.current = true;
+        setVoiceState("listening");
+      } catch (e: unknown) {
+        // Recognition might already be active or starting
+      }
+    }
+  }, []);
+
+  // Initialize Voice and check Web Speech API on mount
   useEffect(() => {
     if (typeof window !== "undefined") {
       const hasRecognition = "webkitSpeechRecognition" in window || "SpeechRecognition" in window;
@@ -59,21 +85,28 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
       if (!hasRecognition || !hasSynthesis) {
         setIsSpeechSupported(false);
       }
+
+      // Initialize voice selection and cache
+      initVoiceSelection(() => {
+        setVoiceDiagnostic(getVoiceDiagnostic());
+      });
+      setVoiceDiagnostic(getVoiceDiagnostic());
     }
   }, []);
 
-  // Helper to add a transcript item
-  const addTranscript = useCallback((sender: "customer" | "aria", text: string) => {
+  // Helper to add a transcript item with optional order attachment
+  const addTranscript = useCallback((sender: "customer" | "aria", text: string, order?: MockOrder | null) => {
     const newMsg: TranscriptMessage = {
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       sender,
       text,
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+      order: order || undefined,
     };
     setTranscript((prev) => [...prev, newMsg]);
   }, []);
 
-  // Browser speech synthesis function
+  // Consistent speech synthesis with selected Aria voice
   const speakAriaResponse = useCallback(
     (text: string): Promise<void> => {
       return new Promise((resolve) => {
@@ -82,16 +115,17 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
           return;
         }
 
-        // Cancel any pending speech
+        // Cancel previous utterances to prevent queuing/overlapping speech
         window.speechSynthesis.cancel();
 
         isSpeakingRef.current = true;
-        setVoiceState("speaking");
+        setVoiceState("responding");
 
-        // Pause speech recognition while Aria speaks to avoid acoustic feedback
-        if (recognitionRef.current) {
+        // Temporarily pause recognition while Aria speaks to prevent acoustic feedback/echo
+        if (recognitionRef.current && isRecognitionActiveRef.current) {
           try {
             recognitionRef.current.abort();
+            isRecognitionActiveRef.current = false;
           } catch (e) {
             // Ignore abort error
           }
@@ -101,23 +135,20 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
         utterance.rate = 1.0;
         utterance.pitch = 1.05;
 
-        // Try to pick an en-IN or pleasant English voice if available
-        const voices = window.speechSynthesis.getVoices();
-        const preferredVoice =
-          voices.find((v) => v.lang.includes("en-IN") || v.name.includes("India")) ||
-          voices.find((v) => v.lang.startsWith("en") && (v.name.includes("Natural") || v.name.includes("Female"))) ||
-          voices.find((v) => v.lang.startsWith("en"));
-
-        if (preferredVoice) {
-          utterance.voice = preferredVoice;
+        // Explicitly assign the selected voice
+        const voice = getSelectedAriaVoice();
+        if (voice) {
+          utterance.voice = voice;
         }
 
         utterance.onend = () => {
           isSpeakingRef.current = false;
           if (isCallActiveRef.current) {
             setVoiceState("listening");
-            // Restart speech recognition cleanly after Aria finishes speaking
-            restartRecognition();
+            // Delay slightly (150ms) to ensure mic clears audio hardware before restarting
+            setTimeout(() => {
+              restartRecognition();
+            }, 150);
           } else {
             setVoiceState("idle");
           }
@@ -129,7 +160,9 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
           isSpeakingRef.current = false;
           if (isCallActiveRef.current) {
             setVoiceState("listening");
-            restartRecognition();
+            setTimeout(() => {
+              restartRecognition();
+            }, 150);
           } else {
             setVoiceState("idle");
           }
@@ -140,18 +173,30 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
       });
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [restartRecognition]
   );
 
   // Send message to server backend API
   const sendTextMessage = useCallback(
     async (text: string) => {
       if (!text || text.trim() === "") return;
+      if (isProcessingTurnRef.current) return; // Prevent concurrent duplicate submissions
 
+      isProcessingTurnRef.current = true;
       const userText = text.trim();
       addTranscript("customer", userText);
       setCurrentSpeakerText("");
       setVoiceState("thinking");
+
+      // Temporarily stop recognition during thinking to avoid capturing background ambient noise
+      if (recognitionRef.current && isRecognitionActiveRef.current) {
+        try {
+          recognitionRef.current.abort();
+          isRecognitionActiveRef.current = false;
+        } catch (e) {
+          // Ignore
+        }
+      }
 
       try {
         const historyForApi = transcriptRef.current.map((t) => ({
@@ -174,40 +219,41 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
         }
 
         const data = await res.json();
-        const reply = data.reply || "I am here to help you with your order. How can I assist?";
+        const reply = data.reply || "I'm having trouble processing that right now. Please try again.";
 
         if (data.detectedOrderId) {
           setDetectedOrderId(data.detectedOrderId);
         }
 
-        addTranscript("aria", reply);
+        // Attach order card if real lookup returned an order
+        let returnedOrder: MockOrder | null = null;
+        if (data.toolResult?.order) {
+          returnedOrder = data.toolResult.order as MockOrder;
+          setActiveOrderCard(returnedOrder);
+        }
 
-        // Speak aloud
+        addTranscript("aria", reply, returnedOrder);
+
+        // Speak Aria's response
         await speakAriaResponse(reply);
       } catch (err: unknown) {
         console.error("Agent chat error:", err);
         setErrorMessage("Network or connection error. Please try again.");
         setVoiceState("error");
 
-        const fallbackErr = "I am having trouble with the connection. Could you please repeat that?";
+        const fallbackErr = "I'm having trouble processing that right now. Please try again.";
         addTranscript("aria", fallbackErr);
         await speakAriaResponse(fallbackErr);
+      } finally {
+        isProcessingTurnRef.current = false;
+        // If speaking has already ended by the time finally runs, ensure recognition restarts
+        if (!isSpeakingRef.current && isCallActiveRef.current) {
+          restartRecognition();
+        }
       }
     },
-    [addTranscript, callId, speakAriaResponse]
+    [addTranscript, callId, speakAriaResponse, restartRecognition]
   );
-
-  // Restart speech recognition safely
-  const restartRecognition = useCallback(() => {
-    if (!isCallActiveRef.current || isSpeakingRef.current) return;
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.start();
-      } catch (e: unknown) {
-        // Recognition might already be active or starting
-      }
-    }
-  }, []);
 
   // Initialize Speech Recognition instance
   const initSpeechRecognition = useCallback(() => {
@@ -220,17 +266,35 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
       return;
     }
 
+    // Clean up previous instance if any
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (e) {
+        // Ignore
+      }
+      isRecognitionActiveRef.current = false;
+    }
+
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
 
-    // Prefer Indian English
+    // Prefer Indian English locale for voice CX
     recognition.lang = "en-IN";
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onstart = () => {
+      isRecognitionActiveRef.current = true;
+      if (!isSpeakingRef.current && !isProcessingTurnRef.current && isCallActiveRef.current) {
+        setVoiceState("listening");
+      }
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
-      if (isSpeakingRef.current) return;
+      if (isSpeakingRef.current || isProcessingTurnRef.current) return;
 
       let interim = "";
       let finalTranscript = "";
@@ -255,25 +319,37 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => {
+      // "no-speech" and "aborted" are standard lifecycle events, not critical fatal errors
+      if (event.error === "no-speech" || event.error === "aborted") {
+        return;
+      }
+
       console.warn("SpeechRecognition error:", event.error);
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         setErrorMessage("Microphone access was denied. Please allow microphone permissions in your browser.");
         setVoiceState("error");
-      } else if (event.error === "no-speech") {
-        // Normal quiet pause, continue listening
       } else if (event.error === "network") {
         setErrorMessage("Speech recognition network error. Please verify your internet connection.");
       }
     };
 
     recognition.onend = () => {
-      // If the call is still active and Aria isn't speaking, restart recognition
-      if (isCallActiveRef.current && !isSpeakingRef.current) {
-        try {
-          recognition.start();
-        } catch (e) {
-          // Ignore restart conflicts
-        }
+      isRecognitionActiveRef.current = false;
+      // If the call is still active and neither speaking nor processing, restart recognition immediately
+      if (isCallActiveRef.current && !isSpeakingRef.current && !isProcessingTurnRef.current) {
+        setTimeout(() => {
+          if (isCallActiveRef.current && !isSpeakingRef.current && !isProcessingTurnRef.current) {
+            try {
+              recognition.start();
+              isRecognitionActiveRef.current = true;
+              setVoiceState("listening");
+            } catch (e) {
+              // Ignore restart conflicts
+            }
+          }
+        }, 100);
+      } else if (!isCallActiveRef.current) {
+        setVoiceState("idle");
       }
     };
 
@@ -286,25 +362,18 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
     setCallSummary(null);
     setTranscript([]);
     setDetectedOrderId(null);
+    setActiveOrderCard(null);
 
     const newCallId = `call_${Date.now()}`;
     setCallId(newCallId);
     setIsCallActive(true);
     isCallActiveRef.current = true;
-    setVoiceState("listening");
+    setVoiceState("responding");
 
     // Initialize recognition
     initSpeechRecognition();
 
-    try {
-      if (recognitionRef.current) {
-        recognitionRef.current.start();
-      }
-    } catch (e) {
-      console.warn("Error starting speech recognition:", e);
-    }
-
-    // Aria warm greeting
+    // Aria warm initial greeting
     const welcomeText = "Namaste! I am Aria from Aura Skincare. How can I help you today?";
     addTranscript("aria", welcomeText);
     speakAriaResponse(welcomeText);
@@ -314,7 +383,7 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
   const endCall = useCallback(async () => {
     setIsCallActive(false);
     isCallActiveRef.current = false;
-    setVoiceState("idle");
+    setVoiceState("ended");
     setCurrentSpeakerText("");
 
     // Stop speech synthesis immediately
@@ -322,15 +391,17 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
       window.speechSynthesis.cancel();
     }
     isSpeakingRef.current = false;
+    isProcessingTurnRef.current = false;
 
-    // Stop speech recognition cleanly
+    // Stop speech recognition cleanly and ensure no restart
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.stop();
         recognitionRef.current.abort();
+        recognitionRef.current.stop();
       } catch (e) {
         // Ignore
       }
+      isRecognitionActiveRef.current = false;
     }
 
     const currentCallId = callId || `call_${Date.now()}`;
@@ -368,8 +439,10 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
     currentSpeakerText,
     errorMessage,
     detectedOrderId,
+    activeOrderCard,
     callSummary,
     callId,
+    voiceDiagnostic,
     startCall,
     endCall,
     sendTextMessage,

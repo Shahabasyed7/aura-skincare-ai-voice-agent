@@ -15,68 +15,117 @@ export function generateDeterministicSummary(
     .map((h) => h.text)
     .join(" ");
 
-  const detectedId =
-    providedOrderId ||
-    extractOrderIdFromText(fullCustomerText) ||
-    history.map((h) => extractOrderIdFromText(h.text)).find((id) => id !== null) ||
-    null;
+  const ariaMessages = history.filter((h) => h.sender === "aria").map((h) => h.text);
+  const fullAriaText = ariaMessages.join(" ");
+
+  // Check if Aria actually delivered an answer beyond the initial greeting
+  const nonGreetingAria = ariaMessages.filter(
+    (msg) => !msg.toLowerCase().includes("namaste") && !msg.toLowerCase().includes("how can i help you today")
+  );
+  const ariaAnswered = nonGreetingAria.length > 0;
 
   const lower = fullCustomerText.toLowerCase();
+  const lowerAria = fullAriaText.toLowerCase();
+
+  // An order ID is only truly detected if the customer provided it, or if explicitly passed
+  const customerMentionedId = extractOrderIdFromText(fullCustomerText);
+  const detectedId = customerMentionedId || providedOrderId || null;
 
   let intent: CustomerIntent = "GENERAL_INQUIRY";
-  let status: ResolutionStatus = "RESOLVED";
+  let status: ResolutionStatus = "UNRESOLVED";
   let customerIssue = "General skincare or order assistance.";
-  let actionsTaken: string[] = ["Greeted customer", "Informed customer of Aura Skincare care policies"];
-  let outcome = "Query addressed.";
+  let actionsTaken: string[] = ["Greeted customer"];
+  let outcome = "Call ended before resolution.";
   let followUpRequired = false;
   let followUpDetails: string | undefined = undefined;
   let summaryText = "Customer called Aura Skincare support.";
 
-  if (lower.includes("track") || lower.includes("where") || lower.includes("delivery status")) {
+  if (!ariaAnswered) {
+    status = "UNRESOLVED";
+    outcome = "Customer disconnected or query was not completed.";
+    summaryText = "Customer called but the conversation ended before Aria could deliver a response.";
+    return {
+      call_id: callId,
+      customer_intent: "GENERAL_INQUIRY",
+      customer_issue: "Incomplete conversation.",
+      order_id: detectedId,
+      actions_taken: ["Call connected"],
+      resolution_status: status,
+      outcome,
+      follow_up_required: false,
+      call_summary: summaryText,
+      transcript: history.map((h) => ({
+        sender: h.sender,
+        text: h.text,
+        timestamp: h.timestamp,
+      })),
+    };
+  }
+
+  const isOrderTrackingQuery =
+    Boolean(customerMentionedId && (lower.includes("track") || lower.includes("where") || lower.includes("status"))) ||
+    (lower.includes("track") && !lower.includes("product")) ||
+    (lower.includes("where is my order")) ||
+    (lower.includes("order status"));
+
+  if (isOrderTrackingQuery) {
     intent = "ORDER_TRACKING";
     customerIssue = `Inquired regarding live tracking and delivery status for ${detectedId || "order"}.`;
-    actionsTaken = ["Extracted order ID", "Retrieved courier & tracking information from internal database"];
-    if (detectedId === "ORD-101") {
-      outcome = "Provided BlueDart tracking ID BD-982103 with delivery expected today by 6 PM.";
-    } else if (detectedId === "ORD-102") {
-      outcome = "Confirmed package was delivered 14 days ago via Delhivery.";
-    } else if (detectedId === "ORD-103") {
-      outcome = "Confirmed order is Processing and will be dispatched in 3–5 business days.";
+    
+    // Check if Aria actually communicated tracking details in transcript
+    const ariaGaveTracking =
+      lowerAria.includes("tracking") ||
+      lowerAria.includes("out for delivery") ||
+      lowerAria.includes("bluedart") ||
+      lowerAria.includes("delhivery") ||
+      lowerAria.includes("processing") ||
+      lowerAria.includes("delivered");
+
+    if (ariaGaveTracking) {
+      status = "RESOLVED";
+      actionsTaken = ["Retrieved mock order record", "Communicated courier and tracking information to customer"];
+      if (detectedId === "ORD-101") {
+        outcome = "Provided BlueDart tracking ID BD-982103 with delivery expected today by 6 PM.";
+      } else if (detectedId === "ORD-102") {
+        outcome = "Confirmed package was delivered 14 days ago via Delhivery.";
+      } else if (detectedId === "ORD-103") {
+        outcome = "Confirmed order is Processing and will be dispatched in 3–5 business days.";
+      } else {
+        outcome = "Communicated order fulfillment details.";
+      }
+      summaryText = `Aria provided the current status, courier, tracking ID, and expected delivery time for ${detectedId || "the order"}.`;
     } else {
-      outcome = "Provided verified order status.";
+      status = "UNRESOLVED";
+      outcome = "Order details were not fully delivered during the call.";
+      summaryText = `Customer asked about tracking ${detectedId || "order"} but the call ended before full tracking details were provided.`;
     }
-    summaryText = detectedId
-      ? `Customer asked about delivery status for ${detectedId}. Agent retrieved courier tracking and expected arrival details.`
-      : "Customer requested order tracking details. Agent explained tracking requirements.";
   } else if (lower.includes("cancel")) {
     intent = "ORDER_CANCELLATION";
-    status = "POLICY_EXPLAINED";
     customerIssue = `Requested cancellation for ${detectedId || "order"}.`;
-    actionsTaken = ["Checked order fulfillment status against deterministic cancellation policy"];
-    if (detectedId === "ORD-101") {
+    actionsTaken = ["Checked order fulfillment status against cancellation policy"];
+    if (detectedId === "ORD-101" || lowerAria.includes("cannot be cancelled") || lowerAria.includes("refuse delivery")) {
+      status = "POLICY_EXPLAINED";
       outcome = "Cancellation denied as order is Out for Delivery. Advised customer to refuse delivery at doorstep.";
-    } else if (detectedId === "ORD-103") {
+    } else if (detectedId === "ORD-103" || lowerAria.includes("eligible for cancellation")) {
       status = "RESOLVED";
-      outcome = "Cancellation approved as order is in Processing status.";
+      outcome = "Verified order is in Processing status and eligible for cancellation. Customer advised of cancellation eligibility.";
     } else {
+      status = "POLICY_EXPLAINED";
       outcome = "Explained that only Processing orders are eligible for cancellation.";
     }
-    summaryText = detectedId
-      ? `Customer requested cancellation for ${detectedId}. Agent evaluated eligibility under the Processing-only cancellation policy.`
-      : "Customer asked about order cancellation policy. Agent explained that only Processing orders can be cancelled.";
+    summaryText = `Customer requested cancellation for ${detectedId || "order"}. Aria evaluated eligibility under the Processing-only cancellation policy.`;
   } else if (lower.includes("return") || lower.includes("refund")) {
     intent = "RETURN_REQUEST";
-    status = "POLICY_EXPLAINED";
     customerIssue = `Requested return for ${detectedId || "order"}.`;
     actionsTaken = ["Checked delivery date against 7-day unopened product return window"];
-    if (detectedId === "ORD-102") {
+    if (detectedId === "ORD-102" || lowerAria.includes("exceeds our 7-day") || lowerAria.includes("cannot accept returns")) {
+      status = "POLICY_EXPLAINED";
       outcome = "Return denied as delivery occurred 14 days ago, exceeding the strict 7-day window.";
     } else {
+      status = "POLICY_EXPLAINED";
       outcome = "Explained our 7-day return policy for unopened, unused products in original packaging.";
     }
-    summaryText = detectedId
-      ? `Customer inquired about returning order ${detectedId}. Agent verified the 7-day unopened return policy window.`
-      : "Customer inquired about returns. Agent explained our 7-day unopened product return policy.";
+    summaryText = `Customer inquired about returns. Aria verified the 7-day unopened return policy window.`;
   } else if (lower.includes("damage") || lower.includes("broken") || lower.includes("leak")) {
     intent = "DAMAGED_PRODUCT";
     status = "INFO_REQUESTED";
@@ -88,22 +137,43 @@ export function generateDeterministicSummary(
     summaryText = "Customer reported a damaged product. Agent provided instructions for the 48-hour photo verification and replacement process.";
   } else if (lower.includes("shipping") || lower.includes("free shipping") || lower.includes("delivery time")) {
     intent = "SHIPPING_DELIVERY";
+    status = "RESOLVED";
     customerIssue = "Inquired about shipping fees and delivery timelines.";
     actionsTaken = ["Explained ₹499 free shipping threshold", "Clarified 3–5 business days timeline"];
     outcome = "Customer informed: Free shipping above ₹499, ₹50 fee below ₹499, 3–5 business days delivery.";
     summaryText = "Customer asked about shipping rates and delivery timelines. Agent explained ₹499 free shipping threshold and 3–5 day delivery.";
   } else if (lower.includes("cod") || lower.includes("cash on delivery") || lower.includes("pay")) {
     intent = "PAYMENT_COD";
+    status = "RESOLVED";
     customerIssue = "Inquired about Cash on Delivery (COD) terms.";
     actionsTaken = ["Explained ₹2,500 COD limit", "Clarified cash or UPI payment at doorstep"];
     outcome = "Confirmed COD available up to ₹2,500 payable by cash or UPI.";
     summaryText = "Customer asked about Cash on Delivery options. Agent confirmed COD availability up to ₹2,500 payable via cash or UPI.";
-  } else if (lower.includes("serum") || lower.includes("sunscreen") || lower.includes("face wash") || lower.includes("product")) {
+  } else if (
+    lower.includes("serum") ||
+    lower.includes("sunscreen") ||
+    lower.includes("face wash") ||
+    lower.includes("toner") ||
+    lower.includes("product") ||
+    lower.includes("skincare") ||
+    lower.includes("skin care") ||
+    lower.includes("can care") ||
+    lower.includes("ingredients")
+  ) {
     intent = "PRODUCT_INQUIRY";
-    customerIssue = "Inquired about Aura Skincare organic botanical products and ingredients.";
-    actionsTaken = ["Shared product formulations and benefits"];
-    outcome = "Product guidance provided for organic botanical skincare.";
-    summaryText = "Customer inquired regarding Aura Skincare botanical product lineup and ingredients.";
+    status = "RESOLVED";
+    customerIssue = "Inquired about Aura Skincare products.";
+    actionsTaken = ["Shared product information from catalog"];
+    outcome = "Product guidance provided from catalog.";
+    summaryText = "Customer inquired regarding Aura Skincare product catalog.";
+  } else {
+    // Open-ended introductory or greetings
+    intent = "GENERAL_INQUIRY";
+    status = "UNRESOLVED";
+    customerIssue = "Customer introduced themselves or asked general capabilities.";
+    actionsTaken = ["Greeted customer", "Explained Aura Skincare support capabilities"];
+    outcome = "Aria explained available support areas; customer has not yet completed a specific inquiry.";
+    summaryText = "Customer initiated a conversation. Aria shared support options and welcomed further questions.";
   }
 
   return {
@@ -140,7 +210,7 @@ export async function generateCallSummary(
       customer_issue: "Call connected without spoken dialogue.",
       order_id: null,
       actions_taken: ["Call connected"],
-      resolution_status: "RESOLVED",
+      resolution_status: "UNRESOLVED",
       outcome: "Call ended.",
       follow_up_required: false,
       call_summary: "Call connected and completed with no dialogue.",
@@ -167,20 +237,24 @@ export async function generateCallSummary(
   "customer_issue": string,
   "order_id": string or null,
   "actions_taken": string[],
-  "resolution_status": "RESOLVED" | "POLICY_EXPLAINED" | "ESCALATED" | "INFO_REQUESTED",
+  "resolution_status": "RESOLVED" | "POLICY_EXPLAINED" | "ESCALATED" | "INFO_REQUESTED" | "UNRESOLVED",
   "outcome": string,
   "follow_up_required": boolean,
   "follow_up_details": string optional,
   "call_summary": string
 }
-Do not fabricate facts. Base summary only on the actual conversation.`,
+CRITICAL RULES:
+- Mark resolution_status as "UNRESOLVED" if Aria did not actually deliver the requested order information or answer during the call, if the customer merely introduced themselves or asked general capabilities, or if the conversation ended abruptly.
+- Mark as "RESOLVED" only when a specific actionable customer request (order tracking, product policy, or clear order query) was actually answered successfully in the transcript.
+- Never claim in actions_taken, outcome, or call_summary that Aria communicated details (such as tracking numbers) unless those exact details appear in the transcript.
+- Base the summary purely on the actual transcript.`,
     });
 
     const transcriptStr = history
       .map((m) => `${m.sender.toUpperCase()}: ${m.text}`)
       .join("\n");
 
-    const prompt = `Call ID: ${callId}\nConversation Transcript:\n${transcriptStr}\n\nDetected Order ID: ${detectedOrderId || "None"}\n\nGenerate JSON summary:`;
+    const prompt = `Call ID: ${callId}\nConversation Transcript:\n${transcriptStr}\n\nDetected Order ID: ${detectedOrderId || "None"}\n\nGenerate accurate JSON summary:`;
     const result = await model.generateContent(prompt);
     const text = result.response.text();
     const parsed = JSON.parse(text);
@@ -191,8 +265,8 @@ Do not fabricate facts. Base summary only on the actual conversation.`,
       customer_issue: parsed.customer_issue || "Customer inquiry handled.",
       order_id: parsed.order_id || detectedOrderId || null,
       actions_taken: Array.isArray(parsed.actions_taken) ? parsed.actions_taken : ["Verified query with Aura Care policies"],
-      resolution_status: parsed.resolution_status || "RESOLVED",
-      outcome: parsed.outcome || "Inquiry resolved.",
+      resolution_status: parsed.resolution_status || "UNRESOLVED",
+      outcome: parsed.outcome || "Inquiry evaluated.",
       follow_up_required: Boolean(parsed.follow_up_required),
       follow_up_details: parsed.follow_up_details,
       call_summary: parsed.call_summary || "Call completed.",

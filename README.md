@@ -1,116 +1,93 @@
 # Aura Skincare — AI Voice CX Agent (Aria)
 
-A complete, production-grade hiring assignment project implementing **Aria**, an AI Voice Customer Experience Agent for **Aura Skincare**, a premium organic Indian skincare brand.
+A complete, production-grade AI Voice Customer Experience Agent for **Aura Skincare India**, built for natural customer support conversations, order lifecycle management, deterministic policy enforcement, and structured post-call summaries.
 
-Aria communicates with customers via spoken voice, resolves order tracking requests, evaluates return/cancellation eligibility under deterministic brand rules, and produces structured post-call summaries.
-
----
-
-## 1. Quick Start & Local Setup
-
-### Prerequisites
-- Node.js 18+ or 20+
-- Modern Web Browser (Google Chrome or Microsoft Edge recommended for native Web Speech API support)
-
-### Installation
-```bash
-# 1. Clone repository & install dependencies
-git clone <your-repo-url>
-cd Aura-ai
-npm install
-
-# 2. Configure environment variables
-cp .env.example .env.local
-```
-
-### Environment Variables
-Edit `.env.local` to add your Google Gemini API key:
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-```
-> **Note**: Even if no Gemini API key is provided or if quota is exceeded, the application features an automatic **deterministic fallback engine** that handles order tracking, cancellations, returns, shipping, COD, and brand questions seamlessly.
-
-### Run Locally
-```bash
-# Start Next.js development server
-npm run dev
-
-# Or run production build
-npm run build
-npm start
-```
-Visit `http://localhost:3000` in Google Chrome or Microsoft Edge.
-
-### Run Tests
-```bash
-npm test
-```
-Vitest executes 19 unit tests across order lookup and deterministic policy rules.
+- **Live Production URL**: [https://aura-skincare-ai-voice-agent.vercel.app](https://aura-skincare-ai-voice-agent.vercel.app)
+- **GitHub Repository**: [https://github.com/Shahabasyed7/aura-skincare-ai-voice-agent](https://github.com/Shahabasyed7/aura-skincare-ai-voice-agent)
+- **Portfolio**: [https://shahaba-ai-portfolio.vercel.app/](https://shahaba-ai-portfolio.vercel.app/)
 
 ---
 
-## 2. Architecture & Design Decisions
+## 1. Project Overview & Key Features
 
-### Tech Stack
+Aria communicates with customers via continuous bidirectional spoken voice, resolves order tracking requests, evaluates return/cancellation eligibility under deterministic brand rules, and produces structured post-call summaries.
+
+### Key Capabilities
+- **Natural Voice Conversations**: Real-time spoken dialogue powered by the browser Web Speech API (`en-IN`) with female voice matching, continuous listening, and acoustic feedback suppression so Aria never hears herself.
+- **Product Intelligence & Context Maintenance**: Handles multi-turn inquiries, pronoun resolution ("its price", "buy it"), and product transitions without restarting.
+- **Audited Botanical Catalog**: Uses strictly verified product data. Green Tea Face Wash + Toner bundle is offered for ₹850 (with standalone prices accurately identified as unavailable). Does not invent unverified ingredients, medical benefits, or organic claims.
+- **Isolated Customer Order Cards**: Displays customer order cards (e.g. `ORD-103` for Ananya Patel) only when the customer explicitly provides an order ID or asks for tracking, preventing customer data exposure during general product inquiries.
+- **Deterministic Policy Guardrails**: Enforces exact, non-hallucinated return windows (7 days from delivery), cancellation windows (processing status only), COD thresholds (up to ₹2,500), and shipping fee rules (free above ₹499; ₹50 otherwise).
+- **Post-Call Summary Generation**: Produces a standardized JSON summary compliant with the assessment schema upon call completion with a 1-click copy feature.
+- **Evaluator Drawer & Test Scenarios**: Includes a slide-out testing drawer with one-click test cases for canonical orders (`ORD-101`, `ORD-102`, `ORD-103`), price follow-ups, and policy edge cases.
+
+---
+
+## 2. Architecture & Design
+
+### Technology Stack
 - **Framework**: Next.js 14 App Router + TypeScript
-- **Styling**: Tailwind CSS with an organic earthy palette (forest green, natural clay, stone neutrals)
-- **Voice Input**: Browser `webkitSpeechRecognition` / `SpeechRecognition` configured for `en-IN`
-- **Voice Output**: Browser `SpeechSynthesis` with acoustic feedback suppression
-- **AI Engine**: Google Generative AI (Gemini 1.5 Flash) via server-side Route Handlers
-- **Validation**: Zod schema validation on all API endpoints
-- **Testing**: Vitest for unit & boundary testing
-- **Deployment Target**: Vercel Hobby tier (stateless, zero-cost, no external DB needed)
+- **Styling**: Vanilla CSS & Tailwind CSS with a botanical aesthetic (warm cream `#FAF8F2`, eucalyptus green `#2D5A43`, mist green `#DCE7D8`, and deep forest `#18392B`)
+- **Speech Input**: Browser Web Speech API (`SpeechRecognition` / `webkitSpeechRecognition`) with `en-IN` localization
+- **Speech Synthesis**: Browser `SpeechSynthesis` with female voice filtering and synthesis locking
+- **AI Engine**: Google Generative AI (Gemini 1.5 Flash) via server-side Route Handlers with deterministic fallback
+- **Validation**: Zod schema validation on all API requests
+- **Test Suite**: Vitest for unit, boundary, and multi-turn regression testing
+- **Deployment**: Vercel Serverless (stateless, zero-cost, zero external database dependency)
 
 ### Directory Structure
 ```
 src/
 ├── app/
 │   ├── api/
-│   │   ├── calls/[callId]/end/route.ts # Final call summary generation
+│   │   ├── calls/[callId]/end/route.ts # Post-call JSON summary generation
 │   │   ├── chat/route.ts              # Agent turn orchestration
 │   │   ├── health/route.ts            # Service diagnostics & config check
 │   │   ├── orders/route.ts            # Evaluator mock orders list
 │   │   └── orders/[orderId]/route.ts  # Real internal order lookup
-│   ├── globals.css                    # Tailwind aesthetics & styling
-│   ├── layout.tsx                     # App layout & font setup
-│   └── page.tsx                       # Main voice customer dashboard
+│   ├── globals.css                    # Design tokens & botanical styling
+│   ├── layout.tsx                     # Root layout & typography
+│   └── page.tsx                       # Main voice CX dashboard & footer
 ├── components/
-│   ├── CallSummaryCard.tsx            # Structured JSON summary + copy button
-│   ├── OrderHelper.tsx                # 3 canonical demo orders with test buttons
-│   ├── StatusIndicator.tsx            # Live state (Idle, Listening, Thinking, Speaking, Error)
-│   ├── Transcript.tsx                 # Live customer & Aria conversation turns + text input
-│   └── VoiceControls.tsx              # Start Call, End Call & animated voice visualizer
+│   ├── ActiveConversationView.tsx     # Live transcript, order card & call controls
+│   ├── CallSummaryView.tsx            # Structured JSON summary + copy button
+│   ├── EvaluatorDrawer.tsx            # Drawer for evaluator scenarios & test orders
+│   ├── SupportCategories.tsx          # Quick-start topic cards
+│   └── VoiceOrb.tsx                   # Multi-state animated voice orb
 ├── hooks/
 │   └── useVoiceAgent.ts               # Call lifecycle, Web Speech API & audio controls
 ├── lib/
-│   ├── agent/agentOrchestrator.ts     # Intent detection, tool execution, fallback generator
+│   ├── agent/agentOrchestrator.ts     # Multi-turn intent detection & catalog routing
 │   ├── ai/geminiAdapter.ts            # Server-side Gemini client & system instructions
-│   ├── data/mockData.ts               # Mock orders (ORD-101, ORD-102, ORD-103) & brand data
+│   ├── data/
+│   │   ├── mockData.ts                # Canonical mock orders (ORD-101, ORD-102, ORD-103)
+│   │   └── productCatalog.ts          # Verified product catalog & pricing
 │   ├── services/
-│   │   ├── orderService.ts            # get_order_details(order_id) & normalization
+│   │   ├── orderService.ts            # Order lookup & normalization
 │   │   ├── policyService.ts           # Hard deterministic business policy rules
-│   │   └── summaryService.ts          # Structured call summary generation
+│   │   ├── summaryService.ts          # Structured call summary generation
+│   │   └── voiceService.ts            # Female voice matching & synthesis
 │   └── validation/index.ts            # Zod validation schemas
-├── types/index.ts                     # Shared TypeScript interfaces
+├── types/index.ts                     # TypeScript interfaces
 tests/
-└── policyAndOrder.test.ts             # 19 Vitest unit tests for orders & policy rules
+└── policyAndOrder.test.ts             # 47 automated Vitest regression tests
 ```
 
 ---
 
 ## 3. Brand Policies & Deterministic Guardrails
 
-To prevent LLM hallucination of refunds, delivery promises, or policy exceptions, all business logic is hardcoded in TypeScript (`src/lib/services/policyService.ts`):
+All business rules are evaluated deterministically in TypeScript (`src/lib/services/policyService.ts`) to prevent hallucinated promises or policy bypasses:
 
-| Policy Area | Rule | Implementation |
+| Policy Area | Rule | Enforcement |
 |---|---|---|
-| **Shipping Fees** | Free above ₹499; ₹50 fee on ₹499 or below | `calculateShippingFee(amount)` strictly evaluates boundary condition. |
+| **Shipping Fees** | Free above ₹499; ₹50 fee on orders ₹499 or below | `calculateShippingFee(amount)` strictly evaluates boundary condition. |
 | **Delivery Time** | Standard 3–5 business days across India | Verified in both prompt and fallback strings. |
-| **Returns** | Accepted within 7 days of delivery for unopened products | `checkReturnEligibility(order)` evaluates delivery days. ORD-102 (14 days ago) is rejected. |
-| **Damaged Items**| Must be reported within 48 hours with photos | `checkDamagedReportingEligibility(hours)` enforces 48-hour cutoff. |
-| **Cancellations** | Only allowed while status is `Processing` | `checkCancellationEligibility(order)`. ORD-101 (Out for Delivery) is rejected; ORD-103 (Processing) is approved. |
+| **Returns** | Accepted within 7 days of delivery for unopened products | `checkReturnEligibility(order)`. ORD-102 (delivered 14 days ago) is rejected. |
+| **Damaged Items** | Must be reported within 48 hours with photos | `checkDamagedReportingEligibility(hours)` enforces 48-hour cutoff. |
+| **Cancellations** | Allowed only while status is `Processing` | `checkCancellationEligibility(order)`. ORD-101 (Out for Delivery) is rejected; ORD-103 (Processing) is approved. |
 | **Refusal at Door** | Shipped/Out for Delivery orders cannot be cancelled | Customer is guided to refuse delivery at doorstep. |
-| **COD** | Up to ₹2,500; payable by cash or UPI | `checkCodEligibility(amount)`. |
+| **Cash on Delivery** | Available up to ₹2,500; payable by cash or UPI | `checkCodEligibility(amount)`. |
 
 ---
 
@@ -119,66 +96,83 @@ To prevent LLM hallucination of refunds, delivery promises, or policy exceptions
 | Order ID | Customer | Product | Amount | Status | Expected Behavior |
 |---|---|---|---|---|---|
 | **ORD-101** | Priya Sharma | Vitamin C Serum 30ml | ₹699 | Out for Delivery | BlueDart tracking `BD-982103`. Delivery by 6 PM today. Cancellation rejected; advise refusal at doorstep. |
-| **ORD-102** | Rahul Verma | Hydrating Sunscreen SPF 50 | ₹499 | Delivered | Delivered 14 days ago via Delhivery (`DL-441029`). Return rejected (exceeds 7 days). |
+| **ORD-102** | Rahul Verma | Hydrating Sunscreen SPF 50 | ₹499 | Delivered | Delivered 14 days ago via Delhivery (`DL-441029`). Return rejected (exceeds 7-day window). |
 | **ORD-103** | Ananya Patel | Green Tea Face Wash + Toner | ₹850 | Processing | Ordered 3 hours ago. Cancellation eligible. Free shipping applied. |
 
-Unknown order IDs (e.g., `ORD-999`) return a clear, safe error message without fabricating data.
-
 ---
 
-## 5. Voice Agent Technical Details
+## 5. Local Setup & Configuration
 
-1. **Acoustic Feedback Suppression**: When Aria begins speaking via browser `SpeechSynthesis`, speech recognition is paused. When synthesis finishes, recognition is automatically restarted.
-2. **Auto-Restart on Silence**: The browser speech recognition automatically restarts if silence causes an unexpected disconnect while the call is still active.
-3. **Indian English (`en-IN`)**: Speech recognition is configured to `en-IN` and voice synthesis prefers Indian English or natural English voices.
-4. **Clean End-of-Call**: Clicking **End Call** immediately cancels pending speech synthesis, closes the microphone stream, and requests the post-call summary.
-5. **Typing Fallback**: If the evaluator is in a noisy environment or on an unsupported browser, an inline text box allows testing the exact same agent flow.
+### Prerequisites
+- Node.js 18+ or 20+
+- Google Chrome or Microsoft Edge (native Web Speech API support)
 
----
+### Installation
+```bash
+# 1. Clone repository & install dependencies
+git clone https://github.com/Shahabasyed7/aura-skincare-ai-voice-agent.git
+cd aura-skincare-ai-voice-agent
+npm install
 
-## 6. Call Summary JSON Output
-
-When **End Call** is clicked, a structured summary conforming to the assignment schema is generated and displayed with a 1-click **Copy JSON** button:
-
-```json
-{
-  "customer_intent": "ORDER_TRACKING",
-  "order_id": "ORD-101",
-  "resolution_status": "RESOLVED",
-  "call_summary": "Customer asked about delivery. Agent provided the current status, courier, tracking ID, and expected delivery time."
-}
+# 2. Configure environment variables
+cp .env.example .env.local
 ```
 
+### Environment Variables
+Edit `.env.local`:
+```env
+# Server-side Google Gemini API Key
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Optional: Next.js telemetry
+NEXT_TELEMETRY_DISABLED=1
+```
+> **Note**: Even if no Gemini API key is configured or quota is exhausted, Aria falls back to the internal deterministic policy & catalog engine without failing.
+
+### Running Locally
+```bash
+# Start Next.js development server
+npm run dev
+
+# Or run the production build locally
+npm run build
+npm start
+```
+Open `http://localhost:3000` in Google Chrome or Microsoft Edge.
+
 ---
 
-## 7. Deployment Instructions (Vercel)
+## 6. Testing
 
-1. Push your repository to GitHub:
-   ```bash
-   git init
-   git add .
-   git commit -m "feat: complete Aura Skincare AI Voice CX Agent"
-   git remote add origin <your-github-repo-url>
-   git push -u origin main
-   ```
-2. Open the [Vercel Dashboard](https://vercel.com/) and click **Add New Project**.
-3. Import your GitHub repository.
-4. Under **Environment Variables**, add:
-   - `GEMINI_API_KEY`: your Google Gemini API key.
-5. Click **Deploy**. The application will build and deploy cleanly on the Vercel Hobby tier.
+Run the automated test suite with Vitest:
+```bash
+npm test -- --run
+```
+The test suite executes **47 automated tests** across:
+- Order status & tracking lookup
+- Return policy eligibility (boundary conditions & delivered checks)
+- Cancellation window enforcement
+- Shipping fee thresholds & COD limits
+- Multi-turn conversation orchestration, pronoun resolution & product switching
+- Isolation of customer order cards during general product queries
+- Audited catalog enforcement (no unsupported ingredients or organic claims)
 
 ---
 
-## 8. Answers to Assignment Technical Questions
+## 7. Deployment (Vercel)
 
-### Q1: How do you prevent LLMs from hallucinating order details and promises?
-**Answer:** We separate intent understanding from data retrieval and policy enforcement. The LLM is never tasked with remembering orders or deciding business policy. Instead, our deterministic `orderService` looks up orders via `get_order_details(order_id)` and verifies facts against mock data. The policy service computes exact answers (e.g. `ORD-102` is 14 days old and cannot be returned). These verified facts are injected into the prompt as strict constraints with instructions to deliver 1–2 sentence responses. If the LLM is unavailable, the deterministic fallback delivers the verified policy message directly.
+1. Connect the GitHub repository `https://github.com/Shahabasyed7/aura-skincare-ai-voice-agent` in the Vercel dashboard.
+2. In **Project Settings → Environment Variables**, add:
+   - `GEMINI_API_KEY` = your Google Gemini API key.
+3. Deploy with default Next.js build settings:
+   - **Framework Preset**: Next.js
+   - **Build Command**: `next build`
+   - **Output Directory**: `.next`
 
-### Q2: Why use the Browser Web Speech API instead of a server-side WebSocket/Twilio architecture?
-**Answer:** The Browser Web Speech API runs entirely client-side without costly external telephony subscriptions (Twilio/Agora) or heavy streaming audio servers. This allows a zero-cost, free-tier deployment on Vercel Hobby while keeping latency minimal. Speech is transcribed locally and sent as text over stateless HTTP route handlers.
+---
 
-### Q3: How is acoustic feedback (Aria hearing herself) prevented?
-**Answer:** In `useVoiceAgent.ts`, `SpeechSynthesisUtterance` triggers `isSpeakingRef.current = true` and aborts active `SpeechRecognition`. When the `utterance.onend` event fires, recognition is safely resumed. This ensures Aria never transcribes her own voice.
+## 8. Author & Portfolio
 
-### Q4: How does the application maintain conversation state in a serverless environment?
-**Answer:** Vercel serverless functions are stateless. With each request to `POST /api/chat`, the client sends the active conversation transcript history. The server inspects both the current utterance and recent turns to maintain context and pass accurate context to Gemini.
+Designed and developed by **Shahaba Syed**:
+- Portfolio: [https://shahaba-ai-portfolio.vercel.app/](https://shahaba-ai-portfolio.vercel.app/)
+- GitHub: [@Shahabasyed7](https://github.com/Shahabasyed7)

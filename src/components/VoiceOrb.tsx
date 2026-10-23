@@ -40,6 +40,7 @@ export const VoiceOrb: React.FC<VoiceOrbProps> = ({
           glowOpacity: "opacity-60",
         };
       case "speaking":
+      case "responding":
         return {
           gradient: "from-[#6B8068] via-[#86A385] to-[#DCE7D8]",
           shadow: "shadow-[0_0_65px_rgba(107,128,104,0.55)]",
@@ -55,6 +56,7 @@ export const VoiceOrb: React.FC<VoiceOrbProps> = ({
           ringColor: "border-[#E3D1C8]/60",
           glowOpacity: "opacity-50",
         };
+      case "ended":
       case "idle":
       default:
         return {

@@ -40,7 +40,7 @@ export const MOCK_ORDERS: Record<string, MockOrder> = {
 
 export const BRAND_KNOWLEDGE = {
   brand_name: "Aura Skincare",
-  tagline: "Pure, botanical, organic Indian skincare backed by clean science",
+  tagline: "Pure skincare for everyday routines",
   agent_name: "Aria",
   support_email: "support@auraskincare.in",
   operating_hours: "9:00 AM - 7:00 PM IST, Monday to Saturday",
@@ -57,17 +57,17 @@ export const BRAND_KNOWLEDGE = {
     {
       name: "Vitamin C Serum 30ml",
       price: 699,
-      description: "Brightens dark spots, evens tone with Kakadu plum extract and 10% Vitamin C.",
+      description: "Facial serum featuring Vitamin C.",
     },
     {
       name: "Hydrating Sunscreen SPF 50",
       price: 499,
-      description: "Lightweight gel sunscreen, zero white cast, broad spectrum PA++++.",
+      description: "Broad-spectrum SPF 50 sunscreen.",
     },
     {
       name: "Green Tea Face Wash + Toner",
       price: 850,
-      description: "Gentle balancing combo for oily and acne-prone skin, calming green tea extracts.",
+      description: "Face wash and toner bundle.",
     },
   ],
 };

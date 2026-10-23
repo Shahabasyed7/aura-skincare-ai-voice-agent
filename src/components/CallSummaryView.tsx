@@ -1,20 +1,23 @@
 "use client";
 
 import React, { useState } from "react";
-import { CallSummary } from "@/types";
-import { Check, Copy, ChevronDown, ChevronUp, RotateCcw, ShieldCheck, CheckCircle2 } from "lucide-react";
+import { CallSummary, TranscriptMessage } from "@/types";
+import { Check, Copy, ChevronDown, ChevronUp, RotateCcw, ShieldCheck, CheckCircle2, MessageSquare } from "lucide-react";
 
 interface CallSummaryViewProps {
   summary: CallSummary | null;
+  transcript?: TranscriptMessage[];
   onNewConversation: () => void;
 }
 
 export const CallSummaryView: React.FC<CallSummaryViewProps> = ({
   summary,
+  transcript = [],
   onNewConversation,
 }) => {
   const [copied, setCopied] = useState(false);
   const [isJsonOpen, setIsJsonOpen] = useState(false);
+  const [isTranscriptOpen, setIsTranscriptOpen] = useState(true);
 
   if (!summary) {
     return (
@@ -179,6 +182,57 @@ export const CallSummaryView: React.FC<CallSummaryViewProps> = ({
             )}
           </button>
         </div>
+
+        {/* Chronological Transcript Section */}
+        {transcript && transcript.length > 0 && (
+          <div className="pt-4 border-t border-[#DCE7D8]/60">
+            <button
+              onClick={() => setIsTranscriptOpen(!isTranscriptOpen)}
+              className="flex items-center justify-between w-full text-left text-xs text-[#29372D]/70 hover:text-[#29372D] py-1 transition-colors"
+            >
+              <div className="flex items-center gap-1.5 font-medium">
+                <MessageSquare className="w-3.5 h-3.5 text-[#6B8068]" />
+                <span>Full call transcript ({transcript.length} turns)</span>
+              </div>
+              {isTranscriptOpen ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </button>
+
+            {isTranscriptOpen && (
+              <div className="mt-3 space-y-2 max-h-60 overflow-y-auto p-4 bg-[#FAF8F2] border border-[#DCE7D8] rounded-2xl">
+                {transcript.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`flex flex-col text-xs ${
+                      msg.sender === "customer" ? "items-end" : "items-start"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-[10px] font-semibold text-[#29372D]/50 uppercase">
+                        {msg.sender === "customer" ? "Customer" : "Aria"}
+                      </span>
+                      <span className="text-[9px] text-[#29372D]/40">
+                        {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <div
+                      className={`px-3 py-2 rounded-2xl max-w-[85%] text-xs leading-relaxed ${
+                        msg.sender === "customer"
+                          ? "bg-[#6B8068] text-white rounded-tr-xs"
+                          : "bg-white border border-[#DCE7D8] text-[#29372D] rounded-tl-xs shadow-xs"
+                      }`}
+                    >
+                      {msg.text}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Collapsible Disclosure for Raw Structured JSON */}
         <div className="pt-4 border-t border-[#DCE7D8]/60">

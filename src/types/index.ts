@@ -16,13 +16,14 @@ export interface MockOrder {
   cancellation_eligible: boolean;
 }
 
-export type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "error";
+export type VoiceState = "idle" | "listening" | "thinking" | "speaking" | "responding" | "error" | "ended";
 
 export interface TranscriptMessage {
   id: string;
   sender: "customer" | "aria";
   text: string;
   timestamp: string;
+  order?: MockOrder | null;
 }
 
 export type CustomerIntent =
@@ -36,7 +37,7 @@ export type CustomerIntent =
   | "GENERAL_INQUIRY"
   | "UNKNOWN";
 
-export type ResolutionStatus = "RESOLVED" | "POLICY_EXPLAINED" | "ESCALATED" | "INFO_REQUESTED";
+export type ResolutionStatus = "RESOLVED" | "POLICY_EXPLAINED" | "ESCALATED" | "INFO_REQUESTED" | "UNRESOLVED";
 
 export interface CallSummary {
   call_id: string;

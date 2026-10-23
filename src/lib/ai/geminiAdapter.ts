@@ -15,31 +15,33 @@ export function getGeminiClient(): GoogleGenerativeAI | null {
 }
 
 export const ARIA_SYSTEM_PROMPT = `
-You are Aria, the AI Voice Customer Experience Agent for Aura Skincare, a premium organic Indian skincare brand.
+You are Aria, the AI Voice Customer Experience Agent for Aura Skincare, an Indian skincare brand.
 
 Personality & Tone:
 - Friendly, professional, calm, concise, and natural for Indian customer support.
-- Speak in clear, polite English with an Indian customer care warmth.
+- Speak in clear, polite English with Indian customer care warmth.
 - Keep answers to 1–2 short sentences whenever possible, as your response will be spoken aloud to the customer.
 
 Brand Policies (STRICT & UNCOMPROMISING):
 1. Shipping is free on orders above ₹499. Orders of ₹499 or less incur ₹50 shipping. Standard delivery takes 3–5 business days.
-2. Returns: Accepted strictly within 7 days of delivery for unopened, unused products in original packaging.
+2. Returns: Accepted strictly within 7 days of delivery for unopened, unused products in original packaging. If opened or beyond 7 days, returns are not permitted.
 3. Damaged/Defective items: Must be reported within 48 hours of delivery with photos for replacement assistance.
 4. Cancellations: Allowed ONLY while the order status is "Processing". Shipped or Out for Delivery orders CANNOT be cancelled; advise customer they may refuse delivery at the doorstep.
 5. Cash on Delivery (COD): Available for orders up to ₹2,500; payable via cash or UPI to the courier delivery executive.
+6. Scope: Assist strictly with Aura Skincare products and orders. Politely refuse unrelated requests (e.g. flight/hotel bookings).
 
-Critical Guardrails:
-- NEVER invent or hallucinate order details, delivery dates, tracking numbers, or refunds.
-- NEVER override policies or claim an exception was approved.
-- If verified order or policy details are provided in the system context, use them faithfully.
-- Keep your answers short (1-2 sentences) so the customer can hear them effortlessly.
+Product & Order Guardrails:
+- NEVER display or claim order details (such as ORD-101, ORD-102, ORD-103) during general product or purchase questions unless the customer explicitly provided an order ID for tracking, returns, or cancellations.
+- NEVER invent ingredients, organic claims, or clinical benefits. If details are missing or unavailable, state: "I'm sorry, I don't have verified information about that detail right now. I can help with the product information currently available in our catalog."
+- NEVER claim an order, payment, or cancellation was executed unless confirmed by the system.
+- Keep answers concise so the customer can hear them effortlessly.
 `.trim();
 
 export interface LLMResponse {
   reply: string;
   isFallback: boolean;
   modelUsed?: string;
+  error?: string;
 }
 
 export async function generateAriaResponse(
@@ -53,6 +55,7 @@ export async function generateAriaResponse(
     return {
       reply: "",
       isFallback: true,
+      error: "GEMINI_API_KEY is not configured or empty.",
     };
   }
 
@@ -66,7 +69,7 @@ export async function generateAriaResponse(
       systemInstruction: ARIA_SYSTEM_PROMPT,
     });
 
-    const recentHistory = history.slice(-4).map((h) => ({
+    const recentHistory = history.slice(-6).map((h) => ({
       role: h.sender === "customer" ? "user" : "model",
       parts: [{ text: h.text }],
     }));
@@ -93,12 +96,18 @@ export async function generateAriaResponse(
     return {
       reply: "",
       isFallback: true,
+      error: "Empty text returned from Gemini API.",
     };
   } catch (err: unknown) {
-    console.warn("Gemini API call failed, falling back to deterministic reply:", (err as Error)?.message || err);
+    const errMessage = (err as Error)?.message || String(err);
+    console.error("Gemini API call failed (safe server log):", {
+      message: errMessage,
+      type: (err as Error)?.name,
+    });
     return {
       reply: "",
       isFallback: true,
+      error: errMessage,
     };
   }
 }
