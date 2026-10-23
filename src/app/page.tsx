@@ -200,20 +200,11 @@ export default function HomePage() {
         onTestScenario={handleStartWithPrompt}
       />
 
-      {/* Minimal Aesthetic Footer */}
+      {/* Minimal Aesthetic Customer-Facing Footer */}
       <footer className="border-t border-[#DCE7D8]/50 py-5 bg-[#FAF8F2]/60">
-        <div className="max-w-5xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between text-xs text-[#29372D]/50 gap-2">
-          <span>Aura Skincare India • Organic Botanical Science</span>
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setIsDrawerOpen(true)}
-              className="hover:text-[#29372D] transition-colors underline underline-offset-2"
-            >
-              Evaluator Test Scenarios
-            </button>
-            <span>•</span>
-            <span>Deterministic Policy Engine</span>
-          </div>
+        <div className="max-w-5xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between text-xs text-[#29372D]/60 gap-2">
+          <span>Aura Skincare India · Personalised care, naturally.</span>
+          <span>© {new Date().getFullYear()} Aura Skincare. All rights reserved.</span>
         </div>
       </footer>
     </div>
