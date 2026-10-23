@@ -10,6 +10,19 @@ interface CallSummaryViewProps {
   onNewConversation: () => void;
 }
 
+export function formatTranscriptTimestamp(ts?: string): string {
+  if (!ts) return "";
+  // If already in 12-hour or time format like "01:23:45 AM" or "14:20:00"
+  if (/^\d{1,2}:\d{2}(:\d{2})?(\s*[AP]M)?$/i.test(ts.trim())) {
+    return ts.trim();
+  }
+  const parsed = new Date(ts);
+  if (!isNaN(parsed.getTime())) {
+    return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  return ts;
+}
+
 export const CallSummaryView: React.FC<CallSummaryViewProps> = ({
   summary,
   transcript = [],
@@ -214,9 +227,11 @@ export const CallSummaryView: React.FC<CallSummaryViewProps> = ({
                       <span className="text-[10px] font-semibold text-[#29372D]/50 uppercase">
                         {msg.sender === "customer" ? "Customer" : "Aria"}
                       </span>
-                      <span className="text-[9px] text-[#29372D]/40">
-                        {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
+                      {msg.timestamp && (
+                        <span className="text-[9px] text-[#29372D]/40">
+                          {formatTranscriptTimestamp(msg.timestamp)}
+                        </span>
+                      )}
                     </div>
                     <div
                       className={`px-3 py-2 rounded-2xl max-w-[85%] text-xs leading-relaxed ${

@@ -54,41 +54,46 @@ export function isLikelyFemaleVoice(voice: SpeechSynthesisVoice): boolean {
 export function selectAriaVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
   if (!voices || voices.length === 0) return null;
 
-  // 1. Highest Priority: Microsoft Heera (en-IN)
-  const heeraVoice = voices.find(
-    (v) => v.name.toLowerCase().includes("heera") || (v.lang.replace("_", "-").toLowerCase() === "en-in" && v.name.toLowerCase().includes("heera"))
-  );
-  if (heeraVoice) return heeraVoice;
+  const isEnIn = (v: SpeechSynthesisVoice) => {
+    const lang = (v.lang || "").replace("_", "-").toLowerCase();
+    const name = (v.name || "").toLowerCase();
+    return lang === "en-in" || lang.startsWith("en-in") || name.includes("en-in") || name.includes("india");
+  };
 
-  // 2. Female English (India) voice (e.g., Neerja, Veena, or en-IN with female keyword)
-  const indianFemaleVoice = voices.find((v) => {
-    const isIndian = v.lang.replace("_", "-").toLowerCase() === "en-in" || v.name.toLowerCase().includes("india");
-    return isIndian && isLikelyFemaleVoice(v);
+  // 1. Preferred Indian English named voices: Microsoft Heera or Neerja
+  const heeraOrNeerja = voices.find((v) => {
+    const name = v.name.toLowerCase();
+    return isEnIn(v) && (name.includes("heera") || name.includes("neerja"));
+  }) || voices.find((v) => {
+    const name = v.name.toLowerCase();
+    return name.includes("heera") || name.includes("neerja");
   });
+  if (heeraOrNeerja) return heeraOrNeerja;
+
+  // 2. Any other female English (India) voice (e.g. Veena, or en-IN with female keywords)
+  const indianFemaleVoice = voices.find((v) => isEnIn(v) && isLikelyFemaleVoice(v));
   if (indianFemaleVoice) return indianFemaleVoice;
 
-  // 3. Any English (India) voice
-  const anyIndianEnglishVoice = voices.find((v) => {
-    return v.lang.replace("_", "-").toLowerCase() === "en-in" || (v.lang.toLowerCase().startsWith("en") && v.name.toLowerCase().includes("india"));
-  });
-  if (anyIndianEnglishVoice) return anyIndianEnglishVoice;
+  // 3. Any available English (India) voice
+  const anyIndianVoice = voices.find((v) => isEnIn(v));
+  if (anyIndianVoice) return anyIndianVoice;
 
-  // 4. Female English voice from another locale (e.g., Natural, Jenny, Aria, Zira, Samantha, Google UK English Female)
-  const femaleEnglishVoice = voices.find((v) => {
-    const isEn = v.lang.toLowerCase().startsWith("en");
-    return isEn && (isLikelyFemaleVoice(v) || v.name.toLowerCase().includes("natural female") || v.name.toLowerCase().includes("female"));
+  // 4. Female English voice from other locales (e.g. Zira, Jenny, Aria, Samantha, Ava, Google UK English Female)
+  const otherFemaleEnglishVoice = voices.find((v) => {
+    const isEn = (v.lang || "").toLowerCase().startsWith("en");
+    return isEn && (isLikelyFemaleVoice(v) || v.name.toLowerCase().includes("female"));
   });
-  if (femaleEnglishVoice) return femaleEnglishVoice;
+  if (otherFemaleEnglishVoice) return otherFemaleEnglishVoice;
 
-  // 5. High-quality natural English voice
-  const naturalEnglishVoice = voices.find((v) => v.lang.toLowerCase().startsWith("en") && v.name.toLowerCase().includes("natural"));
-  if (naturalEnglishVoice) return naturalEnglishVoice;
+  // 5. Any other female voice from any locale
+  const anyFemaleVoice = voices.find((v) => isLikelyFemaleVoice(v));
+  if (anyFemaleVoice) return anyFemaleVoice;
 
   // 6. Any English voice
-  const anyEnglishVoice = voices.find((v) => v.lang.toLowerCase().startsWith("en"));
+  const anyEnglishVoice = voices.find((v) => (v.lang || "").toLowerCase().startsWith("en"));
   if (anyEnglishVoice) return anyEnglishVoice;
 
-  // Fallback to first available voice
+  // 7. Fallback safely to existing first available voice without throwing
   return voices[0] || null;
 }
 

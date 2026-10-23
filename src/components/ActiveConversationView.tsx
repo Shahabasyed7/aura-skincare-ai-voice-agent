@@ -40,7 +40,7 @@ export const ActiveConversationView: React.FC<ActiveConversationViewProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || voiceState === "thinking" || voiceState === "responding") return;
+    if (!inputText.trim() || voiceState === "thinking") return;
     onSendMessage(inputText.trim());
     setInputText("");
   };

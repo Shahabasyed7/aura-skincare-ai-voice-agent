@@ -179,8 +179,11 @@ export function useVoiceAgent(): UseVoiceAgentReturn {
   // Send message to server backend API
   const sendTextMessage = useCallback(
     async (text: string) => {
-      if (!text || text.trim() === "") return;
-      if (isProcessingTurnRef.current) return; // Prevent concurrent duplicate submissions
+      // Interrupt/stop Aria's speech immediately if speech synthesis is currently active
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      isSpeakingRef.current = false;
 
       isProcessingTurnRef.current = true;
       const userText = text.trim();

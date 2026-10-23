@@ -10,6 +10,7 @@ import {
 import { orchestrateAgentTurn, getProductDeterministicAnswer } from "@/lib/agent/agentOrchestrator";
 import { generateDeterministicSummary } from "@/lib/services/summaryService";
 import { selectAriaVoice, isLikelyFemaleVoice } from "@/lib/services/voiceService";
+import { formatTranscriptTimestamp } from "@/components/CallSummaryView";
 import { MockOrder } from "@/types";
 
 describe("Order Service & Normalization Regression Suite", () => {
@@ -586,5 +587,136 @@ describe("Section 7: Order Card Isolation & Audited Catalog Regressions", () => 
     expect(turn.reply.toLowerCase()).not.toContain("cure");
   });
 });
+
+describe("Section 8: 5 Verified Bug Fixes Regressions", () => {
+  // Bug 1: Post-call summary incorporates complete history and reflects mixed/unresolved topics
+  it("Bug 1: captures primary intent, secondary topics (ORD-102 return refusal, ORD-999 failure, flight request), and marks UNRESOLVED", () => {
+    const mixedTranscript = [
+      { sender: "customer" as const, text: "Can you track my order ORD-101?" },
+      { sender: "aria" as const, text: "Your order ORD-101 for Vitamin C Serum 30ml is out for delivery with BlueDart (Tracking ID: BD-982103) and is expected by 6 PM today." },
+      { sender: "customer" as const, text: "Also, I bought ORD-102 and opened it 20 days ago. Can I return it?" },
+      { sender: "aria" as const, text: "Regarding returns for ORD-102: Returns are only accepted within 7 days of delivery for unopened products. Because delivery occurred 14 days ago, it cannot be returned." },
+      { sender: "customer" as const, text: "What about my friend's order ORD-999?" },
+      { sender: "aria" as const, text: "I could not find any order with ID ORD-999. Please verify your order number." },
+      { sender: "customer" as const, text: "Can you book a flight to Goa for me?" },
+      { sender: "aria" as const, text: "I can only assist with Aura Skincare orders and products. I am unable to assist with flights." },
+    ];
+
+    const summary = generateDeterministicSummary(mixedTranscript, "ORD-101", "call_mixed_test");
+
+    // Primary intent identified
+    expect(summary.customer_intent).toBe("ORDER_TRACKING");
+    // Order ID preserved
+    expect(summary.order_id).toBe("ORD-101");
+    // Actions include primary and secondary topics
+    expect(summary.actions_taken).toContain("Communicated courier and tracking information to customer");
+    expect(summary.actions_taken).toContain("Evaluated return eligibility for ORD-102 against 7-day unopened policy");
+    expect(summary.actions_taken).toContain("Attempted order lookup for ORD-999 (not found in database)");
+    // Because ORD-999 lookup failed and flight was unsupported, resolution_status MUST NOT be blanket RESOLVED
+    expect(summary.resolution_status).toBe("UNRESOLVED");
+    // Summary text mentions secondary topics
+    expect(summary.call_summary.toLowerCase()).toContain("ord-102");
+    expect(summary.call_summary.toLowerCase()).toContain("ord-999");
+  });
+
+  // Bug 2: Recap timestamp formatting handles valid, time-string, and invalid/missing gracefully
+  it("Bug 2: formatTranscriptTimestamp handles ISO dates, 12-hour strings, missing, and invalid values safely", () => {
+    // 12-hour format string (as emitted by useVoiceAgent)
+    expect(formatTranscriptTimestamp("01:23:45 AM")).toBe("01:23:45 AM");
+    expect(formatTranscriptTimestamp("02:15 PM")).toBe("02:15 PM");
+
+    // ISO string or parseable date string
+    const isoResult = formatTranscriptTimestamp("2026-10-24T01:30:00.000Z");
+    expect(isoResult).not.toBe("Invalid Date");
+    expect(isoResult).toMatch(/\d{1,2}:\d{2}/);
+
+    // Empty, undefined or null
+    expect(formatTranscriptTimestamp("")).toBe("");
+    expect(formatTranscriptTimestamp(undefined)).toBe("");
+
+    // Invalid non-date string
+    const invalidResult = formatTranscriptTimestamp("random_text");
+    expect(invalidResult).toBe("random_text");
+    expect(invalidResult).not.toBe("Invalid Date");
+  });
+
+  // Bug 3: Multi-question query in one turn resolves both cancellation and return correctly
+  it("Bug 3: detects and answers both cancellation and return questions in one message with correct order context", async () => {
+    const history = [
+      { sender: "customer" as const, text: "Can you track ORD-101?" },
+      { sender: "aria" as const, text: "Your order ORD-101 is Out for Delivery." },
+    ];
+
+    const turn = await orchestrateAgentTurn(
+      "Can I cancel it? I bought ORD-102 and opened it 20 days ago. Can I return it?",
+      history
+    );
+
+    // Both questions answered in the same reply
+    expect(turn.reply.toLowerCase()).toContain("cancellation");
+    expect(turn.reply.toLowerCase()).toContain("return");
+
+    // Correct context: ORD-101 is out for delivery and cannot be cancelled
+    expect(turn.reply).toContain("ORD-101");
+    expect(turn.reply.toLowerCase()).toContain("cannot be cancelled");
+
+    // Correct context: ORD-102 is outside 7 days and opened, so ineligible for return
+    expect(turn.reply).toContain("ORD-102");
+    expect(turn.reply.toLowerCase()).toContain("outside the 7-day return window");
+    expect(turn.reply.toLowerCase()).toContain("not eligible for a return");
+    expect(turn.reply.toLowerCase()).not.toContain("is eligible for a return");
+  });
+
+  // Bug 3: Does not treat an unrelated order ID as the order being cancelled
+  it("Bug 3: does not confuse cancellation target when multiple orders are mentioned", async () => {
+    const turn = await orchestrateAgentTurn(
+      "Can I cancel order ORD-103? Also, can I return ORD-102?",
+      []
+    );
+    // ORD-103 should be evaluated for cancellation (Processing -> eligible)
+    expect(turn.reply).toContain("ORD-103");
+    expect(turn.reply.toLowerCase()).toContain("eligible for cancellation");
+
+    // ORD-102 should be evaluated for return (14 days ago -> ineligible)
+    expect(turn.reply).toContain("ORD-102");
+    expect(turn.reply.toLowerCase()).toContain("delivered 14 days ago");
+  });
+
+  // Bug 5: Voice selection prioritizes Indian English (en-IN) female voices, especially Heera and Neerja
+  it("Bug 5: prioritizes Heera and Neerja en-IN voices, falls back to female, then any English safely", () => {
+    const voicesWithNeerja = [
+      { name: "Google US English", lang: "en-US", voiceURI: "us" } as SpeechSynthesisVoice,
+      { name: "Microsoft Neerja - English (India)", lang: "en-IN", voiceURI: "neerja" } as SpeechSynthesisVoice,
+      { name: "Microsoft David", lang: "en-US", voiceURI: "david" } as SpeechSynthesisVoice,
+    ];
+    const pickedNeerja = selectAriaVoice(voicesWithNeerja);
+    expect(pickedNeerja?.name).toContain("Neerja");
+
+    const voicesWithVeena = [
+      { name: "Google US English", lang: "en-US", voiceURI: "us" } as SpeechSynthesisVoice,
+      { name: "Veena - English (India)", lang: "en-IN", voiceURI: "veena" } as SpeechSynthesisVoice,
+      { name: "Microsoft Mark", lang: "en-US", voiceURI: "mark" } as SpeechSynthesisVoice,
+    ];
+    const pickedVeena = selectAriaVoice(voicesWithVeena);
+    expect(pickedVeena?.name).toContain("Veena");
+
+    const foreignFemaleOnly = [
+      { name: "Microsoft David", lang: "en-US", voiceURI: "david" } as SpeechSynthesisVoice,
+      { name: "Microsoft Zira", lang: "en-US", voiceURI: "zira" } as SpeechSynthesisVoice,
+    ];
+    const pickedZira = selectAriaVoice(foreignFemaleOnly);
+    expect(pickedZira?.name).toContain("Zira");
+
+    const genericOnly = [
+      { name: "Default Voice", lang: "en-US", voiceURI: "def" } as SpeechSynthesisVoice,
+    ];
+    const pickedGeneric = selectAriaVoice(genericOnly);
+    expect(pickedGeneric?.name).toBe("Default Voice");
+
+    // Empty list returns null without throwing
+    expect(selectAriaVoice([])).toBeNull();
+  });
+});
+
 
 

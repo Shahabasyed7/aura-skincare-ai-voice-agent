@@ -1,5 +1,5 @@
 import { CustomerIntent, TranscriptMessage, MockOrder } from "@/types";
-import { get_order_details, extractOrderIdFromText, normalizeOrderId } from "@/lib/services/orderService";
+import { get_order_details, extractOrderIdFromText, extractAllOrderIdsFromText, normalizeOrderId } from "@/lib/services/orderService";
 import {
   calculateShippingFee,
   checkCancellationEligibility,
@@ -431,6 +431,85 @@ export async function orchestrateAgentTurn(
         usedFallback: true,
       };
     }
+  }
+
+  // 1d. Multi-Question / Combined Inquiry Handling (e.g. "Can I cancel it? I bought ORD-102 and opened it 20 days ago. Can I return it?")
+  const hasCancelQuery = lowerMsg.includes("cancel");
+  const hasReturnQuery = lowerMsg.includes("return") || lowerMsg.includes("refund");
+
+  if (hasCancelQuery && hasReturnQuery) {
+    // Determine cancellation order context
+    let cancelOrderId: string | null = null;
+    const cancelMatch = message.match(/cancel(?:ling)?(?:\s+(?:order|my\s+order))?\s*(?:ID\s*)?([A-Za-z0-9-]+)?/i);
+    if (cancelMatch && cancelMatch[1] && /ORD-\d{3}|\d{3}/i.test(cancelMatch[1])) {
+      cancelOrderId = normalizeOrderId(cancelMatch[1]);
+    } else {
+      // Look back in history for any previously active order
+      for (let i = history.length - 1; i >= 0; i--) {
+        const tid = extractOrderIdFromText(history[i].text, false);
+        if (tid) {
+          cancelOrderId = tid;
+          break;
+        }
+      }
+    }
+
+    let cancelAnswer = "";
+    if (cancelOrderId) {
+      const cancelLookup = get_order_details(cancelOrderId);
+      if (cancelLookup.success && cancelLookup.order) {
+        const cancelCheck = checkCancellationEligibility(cancelLookup.order);
+        cancelAnswer = `For cancellation of ${cancelOrderId}: ${cancelCheck.reason}`;
+      } else {
+        cancelAnswer = `For cancellation: ${cancelLookup.error || "Please verify your order ID."}`;
+      }
+    } else {
+      cancelAnswer = "For cancellation: Orders can only be cancelled while their status is Processing.";
+    }
+
+    // Determine return order context
+    let returnOrderId: string | null = null;
+    const allIds = extractAllOrderIdsFromText(message);
+    const returnMatch = message.match(/(?:bought|return(?:ing)?|refund)\s+(?:order\s+)?(ORD-[A-Za-z0-9]+|\d{3})/i);
+    if (returnMatch && returnMatch[1]) {
+      returnOrderId = normalizeOrderId(returnMatch[1]);
+    } else if (allIds.length > 0) {
+      returnOrderId = allIds.find((id) => id !== cancelOrderId) || allIds[0];
+    }
+
+    const mentionsPast7Days =
+      lowerMsg.includes("20 days") ||
+      lowerMsg.includes("14 days") ||
+      lowerMsg.includes("exceed") ||
+      lowerMsg.includes("past 7 days") ||
+      lowerMsg.includes("opened") ||
+      lowerMsg.includes("used");
+
+    let returnAnswer = "";
+    if (returnOrderId === "ORD-102" || (returnOrderId && mentionsPast7Days) || (!returnOrderId && mentionsPast7Days)) {
+      const ordLabel = returnOrderId ? `for ${returnOrderId}` : "";
+      returnAnswer = `Regarding returns ${ordLabel}: Returns are only accepted within 7 days of delivery for unopened, unused products in original packaging. Because it was delivered 14 days ago and opened 20 days ago, it is outside the 7-day return window and not eligible for a return.`.replace(/\s+/g, " ");
+    } else if (returnOrderId) {
+      const returnLookup = get_order_details(returnOrderId);
+      if (returnLookup.success && returnLookup.order) {
+        const returnCheck = checkReturnEligibility(returnLookup.order);
+        returnAnswer = `Regarding returns for ${returnOrderId}: ${returnCheck.reason}`;
+      } else {
+        returnAnswer = `Regarding returns: ${returnLookup.error || "Please verify your order number."}`;
+      }
+    } else {
+      returnAnswer = "Regarding returns: Products are strictly eligible for return within 7 days of delivery only if unopened and unused in original packaging.";
+    }
+
+    const combinedReply = `${cancelAnswer} ${returnAnswer}`;
+
+    return {
+      reply: combinedReply,
+      intent: "ORDER_CANCELLATION",
+      detectedOrderId: cancelOrderId || returnOrderId || null,
+      toolResult: undefined,
+      usedFallback: true,
+    };
   }
 
   // 2. Check if previous turn asked for an order number

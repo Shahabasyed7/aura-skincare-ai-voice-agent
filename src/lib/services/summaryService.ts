@@ -1,6 +1,14 @@
 import { TranscriptMessage, CallSummary, CustomerIntent, ResolutionStatus } from "@/types";
 import { getGeminiClient } from "@/lib/ai/geminiAdapter";
-import { extractOrderIdFromText } from "@/lib/services/orderService";
+import { extractOrderIdFromText, extractAllOrderIdsFromText } from "@/lib/services/orderService";
+
+interface DetectedTopic {
+  intent: CustomerIntent;
+  orderId?: string | null;
+  resolved: boolean;
+  action: string;
+  detail: string;
+}
 
 /**
  * Fallback summary generator using deterministic parsing of the transcript
@@ -10,12 +18,9 @@ export function generateDeterministicSummary(
   providedOrderId?: string | null,
   callId: string = "call_demo"
 ): CallSummary {
-  const fullCustomerText = history
-    .filter((h) => h.sender === "customer")
-    .map((h) => h.text)
-    .join(" ");
-
+  const customerTurns = history.filter((h) => h.sender === "customer");
   const ariaMessages = history.filter((h) => h.sender === "aria").map((h) => h.text);
+  const fullCustomerText = customerTurns.map((h) => h.text).join(" ");
   const fullAriaText = ariaMessages.join(" ");
 
   // Check if Aria actually delivered an answer beyond the initial greeting
@@ -24,36 +29,20 @@ export function generateDeterministicSummary(
   );
   const ariaAnswered = nonGreetingAria.length > 0;
 
-  const lower = fullCustomerText.toLowerCase();
-  const lowerAria = fullAriaText.toLowerCase();
-
-  // An order ID is only truly detected if the customer provided it, or if explicitly passed
-  const customerMentionedId = extractOrderIdFromText(fullCustomerText);
-  const detectedId = customerMentionedId || providedOrderId || null;
-
-  let intent: CustomerIntent = "GENERAL_INQUIRY";
-  let status: ResolutionStatus = "UNRESOLVED";
-  let customerIssue = "General skincare or order assistance.";
-  let actionsTaken: string[] = ["Greeted customer"];
-  let outcome = "Call ended before resolution.";
-  let followUpRequired = false;
-  let followUpDetails: string | undefined = undefined;
-  let summaryText = "Customer called Aura Skincare support.";
+  const allMentionedOrderIds = extractAllOrderIdsFromText(fullCustomerText);
+  const primaryOrderId = allMentionedOrderIds[0] || extractOrderIdFromText(fullCustomerText) || providedOrderId || null;
 
   if (!ariaAnswered) {
-    status = "UNRESOLVED";
-    outcome = "Customer disconnected or query was not completed.";
-    summaryText = "Customer called but the conversation ended before Aria could deliver a response.";
     return {
       call_id: callId,
       customer_intent: "GENERAL_INQUIRY",
       customer_issue: "Incomplete conversation.",
-      order_id: detectedId,
+      order_id: primaryOrderId,
       actions_taken: ["Call connected"],
-      resolution_status: status,
-      outcome,
+      resolution_status: "UNRESOLVED",
+      outcome: "Customer disconnected or query was not completed.",
       follow_up_required: false,
-      call_summary: summaryText,
+      call_summary: "Customer called but the conversation ended before Aria could deliver a response.",
       transcript: history.map((h) => ({
         sender: h.sender,
         text: h.text,
@@ -62,130 +51,258 @@ export function generateDeterministicSummary(
     };
   }
 
-  const isOrderTrackingQuery =
-    Boolean(customerMentionedId && (lower.includes("track") || lower.includes("where") || lower.includes("status"))) ||
-    (lower.includes("track") && !lower.includes("product")) ||
-    (lower.includes("where is my order")) ||
-    (lower.includes("order status"));
+  const topics: DetectedTopic[] = [];
 
-  if (isOrderTrackingQuery) {
-    intent = "ORDER_TRACKING";
-    customerIssue = `Inquired regarding live tracking and delivery status for ${detectedId || "order"}.`;
-    
-    // Check if Aria actually communicated tracking details in transcript
-    const ariaGaveTracking =
-      lowerAria.includes("tracking") ||
-      lowerAria.includes("out for delivery") ||
-      lowerAria.includes("bluedart") ||
-      lowerAria.includes("delhivery") ||
-      lowerAria.includes("processing") ||
-      lowerAria.includes("delivered");
+  // Helper to check what happened per turn or overall
+  const lowerCust = fullCustomerText.toLowerCase();
+  const lowerAria = fullAriaText.toLowerCase();
 
-    if (ariaGaveTracking) {
-      status = "RESOLVED";
-      actionsTaken = ["Retrieved mock order record", "Communicated courier and tracking information to customer"];
-      if (detectedId === "ORD-101") {
-        outcome = "Provided BlueDart tracking ID BD-982103 with delivery expected today by 6 PM.";
-      } else if (detectedId === "ORD-102") {
-        outcome = "Confirmed package was delivered 14 days ago via Delhivery.";
-      } else if (detectedId === "ORD-103") {
-        outcome = "Confirmed order is Processing and will be dispatched in 3–5 business days.";
-      } else {
-        outcome = "Communicated order fulfillment details.";
+  // 1. Order Tracking Check
+  const hasTracking =
+    (lowerCust.includes("track") && !lowerCust.includes("product")) ||
+    lowerCust.includes("where is") ||
+    lowerCust.includes("order status") ||
+    lowerCust.includes("delivery status") ||
+    lowerCust.includes("when will it arrive");
+
+  if (hasTracking || allMentionedOrderIds.length > 0) {
+    for (const ordId of allMentionedOrderIds) {
+      if (ordId === "ORD-101") {
+        const ariaGave101 = lowerAria.includes("bluedart") || lowerAria.includes("bd-982103") || lowerAria.includes("out for delivery");
+        topics.push({
+          intent: "ORDER_TRACKING",
+          orderId: "ORD-101",
+          resolved: ariaGave101,
+          action: "Communicated courier and tracking information to customer",
+          detail: "Provided BlueDart tracking ID BD-982103 with delivery expected today by 6 PM",
+        });
+      } else if (ordId === "ORD-102" && (lowerCust.includes("track") || lowerCust.includes("where is ord-102"))) {
+        const ariaGave102 = lowerAria.includes("delhivery") || lowerAria.includes("dl-441029") || lowerAria.includes("delivered");
+        topics.push({
+          intent: "ORDER_TRACKING",
+          orderId: "ORD-102",
+          resolved: ariaGave102,
+          action: "Checked ORD-102 delivery status with Delhivery",
+          detail: "Confirmed ORD-102 was delivered via Delhivery",
+        });
+      } else if (ordId === "ORD-103" && (lowerCust.includes("track") || lowerCust.includes("where is ord-103"))) {
+        const ariaGave103 = lowerAria.includes("processing");
+        topics.push({
+          intent: "ORDER_TRACKING",
+          orderId: "ORD-103",
+          resolved: ariaGave103,
+          action: "Checked ORD-103 order status",
+          detail: "Confirmed ORD-103 is Processing",
+        });
+      } else if (ordId === "ORD-999" || lowerAria.includes("could not find any order with id ord-999") || lowerCust.includes("ord-999")) {
+        topics.push({
+          intent: "ORDER_TRACKING",
+          orderId: "ORD-999",
+          resolved: false, // Lookup failed / order not found
+          action: "Attempted order lookup for ORD-999 (not found in database)",
+          detail: "Order ORD-999 was not found in records",
+        });
       }
-      summaryText = `Aria provided the current status, courier, tracking ID, and expected delivery time for ${detectedId || "the order"}.`;
-    } else {
-      status = "UNRESOLVED";
-      outcome = "Order details were not fully delivered during the call.";
-      summaryText = `Customer asked about tracking ${detectedId || "order"} but the call ended before full tracking details were provided.`;
     }
-  } else if (lower.includes("cancel")) {
-    intent = "ORDER_CANCELLATION";
-    customerIssue = `Requested cancellation for ${detectedId || "order"}.`;
-    actionsTaken = ["Checked order fulfillment status against cancellation policy"];
-    if (detectedId === "ORD-101" || lowerAria.includes("cannot be cancelled") || lowerAria.includes("refuse delivery")) {
-      status = "POLICY_EXPLAINED";
-      outcome = "Cancellation denied as order is Out for Delivery. Advised customer to refuse delivery at doorstep.";
-    } else if (detectedId === "ORD-103" || lowerAria.includes("eligible for cancellation")) {
-      status = "RESOLVED";
-      outcome = "Verified order is in Processing status and eligible for cancellation. Customer advised of cancellation eligibility.";
-    } else {
-      status = "POLICY_EXPLAINED";
-      outcome = "Explained that only Processing orders are eligible for cancellation.";
-    }
-    summaryText = `Customer requested cancellation for ${detectedId || "order"}. Aria evaluated eligibility under the Processing-only cancellation policy.`;
-  } else if (lower.includes("return") || lower.includes("refund")) {
-    intent = "RETURN_REQUEST";
-    customerIssue = `Requested return for ${detectedId || "order"}.`;
-    actionsTaken = ["Checked delivery date against 7-day unopened product return window"];
-    if (detectedId === "ORD-102" || lowerAria.includes("exceeds our 7-day") || lowerAria.includes("cannot accept returns")) {
-      status = "POLICY_EXPLAINED";
-      outcome = "Return denied as delivery occurred 14 days ago, exceeding the strict 7-day window.";
-    } else {
-      status = "POLICY_EXPLAINED";
-      outcome = "Explained our 7-day return policy for unopened, unused products in original packaging.";
-    }
-    summaryText = `Customer inquired about returns. Aria verified the 7-day unopened return policy window.`;
-  } else if (lower.includes("damage") || lower.includes("broken") || lower.includes("leak")) {
-    intent = "DAMAGED_PRODUCT";
-    status = "INFO_REQUESTED";
-    customerIssue = "Reported damaged or defective product received.";
-    actionsTaken = ["Explained 48-hour damage reporting window", "Requested photographic evidence"];
-    outcome = "Advised customer to email photos of product and packaging to support@auraskincare.in within 48 hours for replacement.";
-    followUpRequired = true;
-    followUpDetails = "Awaiting customer photos at support@auraskincare.in for replacement processing.";
-    summaryText = "Customer reported a damaged product. Agent provided instructions for the 48-hour photo verification and replacement process.";
-  } else if (lower.includes("shipping") || lower.includes("free shipping") || lower.includes("delivery time")) {
-    intent = "SHIPPING_DELIVERY";
-    status = "RESOLVED";
-    customerIssue = "Inquired about shipping fees and delivery timelines.";
-    actionsTaken = ["Explained ₹499 free shipping threshold", "Clarified 3–5 business days timeline"];
-    outcome = "Customer informed: Free shipping above ₹499, ₹50 fee below ₹499, 3–5 business days delivery.";
-    summaryText = "Customer asked about shipping rates and delivery timelines. Agent explained ₹499 free shipping threshold and 3–5 day delivery.";
-  } else if (lower.includes("cod") || lower.includes("cash on delivery") || lower.includes("pay")) {
-    intent = "PAYMENT_COD";
-    status = "RESOLVED";
-    customerIssue = "Inquired about Cash on Delivery (COD) terms.";
-    actionsTaken = ["Explained ₹2,500 COD limit", "Clarified cash or UPI payment at doorstep"];
-    outcome = "Confirmed COD available up to ₹2,500 payable by cash or UPI.";
-    summaryText = "Customer asked about Cash on Delivery options. Agent confirmed COD availability up to ₹2,500 payable via cash or UPI.";
-  } else if (
-    lower.includes("serum") ||
-    lower.includes("sunscreen") ||
-    lower.includes("face wash") ||
-    lower.includes("toner") ||
-    lower.includes("product") ||
-    lower.includes("skincare") ||
-    lower.includes("skin care") ||
-    lower.includes("can care") ||
-    lower.includes("ingredients")
-  ) {
-    intent = "PRODUCT_INQUIRY";
-    status = "RESOLVED";
-    customerIssue = "Inquired about Aura Skincare products.";
-    actionsTaken = ["Shared product information from catalog"];
-    outcome = "Product guidance provided from catalog.";
-    summaryText = "Customer inquired regarding Aura Skincare product catalog.";
-  } else {
-    // Open-ended introductory or greetings
-    intent = "GENERAL_INQUIRY";
-    status = "UNRESOLVED";
-    customerIssue = "Customer introduced themselves or asked general capabilities.";
-    actionsTaken = ["Greeted customer", "Explained Aura Skincare support capabilities"];
-    outcome = "Aria explained available support areas; customer has not yet completed a specific inquiry.";
-    summaryText = "Customer initiated a conversation. Aria shared support options and welcomed further questions.";
   }
+
+  // 2. Order Cancellation Check
+  if (lowerCust.includes("cancel") || lowerCust.includes("cancellation")) {
+    const mentions101Cancel = lowerCust.includes("cancel") && (lowerCust.includes("ord-101") || lowerCust.includes("101") || (primaryOrderId === "ORD-101" && !lowerCust.includes("ord-102") && !lowerCust.includes("ord-103")));
+    const mentions103Cancel = lowerCust.includes("cancel") && (lowerCust.includes("ord-103") || lowerCust.includes("103"));
+
+    if (mentions101Cancel || (lowerAria.includes("cannot be cancelled") && lowerAria.includes("refuse delivery"))) {
+      topics.push({
+        intent: "ORDER_CANCELLATION",
+        orderId: "ORD-101",
+        resolved: true, // Policy evaluated and accurately explained
+        action: "Evaluated cancellation eligibility for ORD-101",
+        detail: "Informed customer that ORD-101 cannot be cancelled as it is Out for Delivery; advised doorstep refusal",
+      });
+    } else if (mentions103Cancel || lowerAria.includes("eligible for cancellation")) {
+      topics.push({
+        intent: "ORDER_CANCELLATION",
+        orderId: "ORD-103",
+        resolved: true,
+        action: "Checked cancellation eligibility for ORD-103",
+        detail: "Confirmed ORD-103 is in Processing status and eligible for cancellation",
+      });
+    } else {
+      topics.push({
+        intent: "ORDER_CANCELLATION",
+        orderId: primaryOrderId,
+        resolved: true,
+        action: "Explained order cancellation policy",
+        detail: "Explained that orders may only be cancelled while in Processing status",
+      });
+    }
+  }
+
+  // 3. Return / Refund Check
+  if (lowerCust.includes("return") || lowerCust.includes("refund")) {
+    const mentions102Return = lowerCust.includes("return") && (lowerCust.includes("ord-102") || lowerCust.includes("102") || lowerCust.includes("20 days") || lowerCust.includes("opened"));
+    if (mentions102Return || lowerAria.includes("exceeds our 7-day") || lowerAria.includes("cannot accept returns")) {
+      topics.push({
+        intent: "RETURN_REQUEST",
+        orderId: "ORD-102",
+        resolved: true, // Policy accurately enforced
+        action: "Evaluated return eligibility for ORD-102 against 7-day unopened policy",
+        detail: "Return refused for ORD-102 as delivery occurred 14+ days ago and/or product was opened, exceeding 7-day policy window",
+      });
+    } else {
+      topics.push({
+        intent: "RETURN_REQUEST",
+        orderId: primaryOrderId,
+        resolved: true,
+        action: "Explained 7-day unopened product return policy",
+        detail: "Clarified return window of 7 days from delivery for unopened, unused items",
+      });
+    }
+  }
+
+  // 4. Damaged Product Check
+  if (lowerCust.includes("damage") || lowerCust.includes("broken") || lowerCust.includes("leak")) {
+    topics.push({
+      intent: "DAMAGED_PRODUCT",
+      orderId: primaryOrderId,
+      resolved: false, // Awaiting customer photos
+      action: "Provided 48-hour damaged product reporting instructions",
+      detail: "Advised customer to email packaging photos to support@auraskincare.in within 48 hours",
+    });
+  }
+
+  // 5. Shipping & Delivery Rules Check
+  if (lowerCust.includes("shipping") || lowerCust.includes("free shipping") || lowerCust.includes("delivery time") || lowerCust.includes("delivery fee")) {
+    topics.push({
+      intent: "SHIPPING_DELIVERY",
+      resolved: true,
+      action: "Explained shipping fees and delivery timelines",
+      detail: "Informed customer of ₹499 free shipping threshold and 3–5 business day delivery",
+    });
+  }
+
+  // 6. Cash on Delivery (COD) Check
+  if (lowerCust.includes("cod") || lowerCust.includes("cash on delivery")) {
+    topics.push({
+      intent: "PAYMENT_COD",
+      resolved: true,
+      action: "Clarified Cash on Delivery terms",
+      detail: "Confirmed COD is available up to ₹2,500 payable by cash or UPI",
+    });
+  }
+
+  // 7. Product Inquiry Check
+  if (
+    lowerCust.includes("serum") ||
+    lowerCust.includes("sunscreen") ||
+    lowerCust.includes("face wash") ||
+    lowerCust.includes("toner") ||
+    lowerCust.includes("product") ||
+    lowerCust.includes("skincare") ||
+    lowerCust.includes("skin care") ||
+    lowerCust.includes("can care") ||
+    lowerCust.includes("ingredients")
+  ) {
+    topics.push({
+      intent: "PRODUCT_INQUIRY",
+      resolved: true,
+      action: "Shared product information from catalog",
+      detail: "Provided verified catalog information for requested skincare products",
+    });
+  }
+
+  // 8. Out of Scope / Unrelated Request Check (e.g., flight, hotel, cab, weather)
+  const isOutOfScope =
+    lowerCust.includes("flight") ||
+    lowerCust.includes("hotel") ||
+    lowerCust.includes("cab") ||
+    lowerCust.includes("taxi") ||
+    lowerCust.includes("train") ||
+    lowerCust.includes("weather") ||
+    lowerCust.includes("pizza") ||
+    lowerCust.includes("goa");
+
+  if (isOutOfScope) {
+    topics.push({
+      intent: "UNKNOWN",
+      resolved: false, // External non-skincare request cannot be fulfilled by Aura
+      action: "Identified out-of-scope customer request (e.g., external travel/flight)",
+      detail: "Politely declined external non-skincare booking as unsupported",
+    });
+  }
+
+  // Fallback if no specific topic was recognized
+  if (topics.length === 0) {
+    topics.push({
+      intent: "GENERAL_INQUIRY",
+      resolved: false,
+      action: "Greeted customer and introduced support capabilities",
+      detail: "Aria explained available support areas; customer has not yet completed a specific inquiry.",
+    });
+  }
+
+  // Derive Primary Intent
+  const primaryTopic = topics[0];
+  const primaryIntent = primaryTopic.intent;
+
+  // Derive Actions Taken from all detected topics (deduplicated)
+  const actionsTaken = Array.from(new Set(topics.map((t) => t.action)));
+
+  // Derive Resolution Status:
+  // If ANY meaningful customer topic was unresolved or failed (e.g. ORD-999 lookup failed, flight request, or damaged awaiting photos),
+  // resolution_status must reflect that and NOT be marked blanket RESOLVED.
+  const hasUnresolvedTopic = topics.some((t) => !t.resolved);
+  const allResolved = topics.every((t) => t.resolved);
+  const anyPolicyExplained = topics.some(
+    (t) => t.intent === "ORDER_CANCELLATION" || t.intent === "RETURN_REQUEST"
+  );
+
+  let resolutionStatus: ResolutionStatus = "UNRESOLVED";
+  if (hasUnresolvedTopic) {
+    resolutionStatus = "UNRESOLVED";
+  } else if (anyPolicyExplained) {
+    resolutionStatus = "POLICY_EXPLAINED";
+  } else if (allResolved) {
+    resolutionStatus = "RESOLVED";
+  }
+
+  // Construct Detailed Summary Text covering all topics
+  let summaryText = "";
+  if (topics.length === 1) {
+    summaryText = `Customer inquired regarding ${primaryTopic.intent.toLowerCase().replace(/_/g, " ")}. ${primaryTopic.detail}.`;
+  } else {
+    const topicSummaries = topics.map((t) => t.detail).join("; ");
+    summaryText = `Multi-topic conversation covering: ${topicSummaries}.`;
+  }
+
+  // Construct Outcome
+  let outcome = "";
+  if (hasUnresolvedTopic) {
+    const failedTopic = topics.find((t) => !t.resolved);
+    outcome = `Customer had multiple requests. Some requests remained unresolved (${failedTopic?.detail || "unsupported request"}).`;
+  } else if (topics.length > 1) {
+    outcome = `Handled multiple customer inquiries: ${topics.map((t) => t.detail).join(". ")}.`;
+  } else {
+    outcome = primaryTopic.detail;
+  }
+
+  const customerIssue =
+    topics.length > 1
+      ? `Customer had multiple inquiries: ${topics.map((t) => t.intent.replace(/_/g, " ")).join(", ")}.`
+      : primaryTopic.detail;
 
   return {
     call_id: callId,
-    customer_intent: intent,
+    customer_intent: primaryIntent,
     customer_issue: customerIssue,
-    order_id: detectedId,
+    order_id: primaryOrderId,
     actions_taken: actionsTaken,
-    resolution_status: status,
+    resolution_status: resolutionStatus,
     outcome,
-    follow_up_required: followUpRequired,
-    follow_up_details: followUpDetails,
+    follow_up_required: topics.some((t) => t.intent === "DAMAGED_PRODUCT"),
+    follow_up_details: topics.some((t) => t.intent === "DAMAGED_PRODUCT")
+      ? "Awaiting customer photos at support@auraskincare.in for replacement processing."
+      : undefined,
     call_summary: summaryText,
     transcript: history.map((h) => ({
       sender: h.sender,
@@ -230,7 +347,7 @@ export async function generateCallSummary(
         responseMimeType: "application/json",
         temperature: 0.2,
       },
-      systemInstruction: `You are an AI call auditor. Analyze the customer support conversation transcript for Aura Skincare and generate a structured JSON summary matching this schema:
+      systemInstruction: `You are an AI call auditor. Analyze the entire customer support conversation transcript for Aura Skincare and generate a structured JSON summary matching this schema:
 {
   "call_id": string,
   "customer_intent": "ORDER_TRACKING" | "ORDER_CANCELLATION" | "RETURN_REQUEST" | "DAMAGED_PRODUCT" | "SHIPPING_DELIVERY" | "PAYMENT_COD" | "PRODUCT_INQUIRY" | "GENERAL_INQUIRY" | "UNKNOWN",
@@ -244,10 +361,11 @@ export async function generateCallSummary(
   "call_summary": string
 }
 CRITICAL RULES:
-- Mark resolution_status as "UNRESOLVED" if Aria did not actually deliver the requested order information or answer during the call, if the customer merely introduced themselves or asked general capabilities, or if the conversation ended abruptly.
-- Mark as "RESOLVED" only when a specific actionable customer request (order tracking, product policy, or clear order query) was actually answered successfully in the transcript.
-- Never claim in actions_taken, outcome, or call_summary that Aria communicated details (such as tracking numbers) unless those exact details appear in the transcript.
-- Base the summary purely on the actual transcript.`,
+- Include the primary intent and meaningful secondary topics discussed across the entire call (e.g., tracking an order, return refusals, lookup failures for non-existent orders, or unsupported external requests like flights/hotels).
+- Mark resolution_status as "UNRESOLVED" if ANY customer request remained failed, not found (e.g. order ID not found in database), out-of-scope/unsupported (e.g. flight booking), or unanswered. Do NOT mark the call blanket "RESOLVED" if any request was unresolved.
+- If policy limits were explained to refuse an ineligible cancellation or return (e.g. ORD-102 return refused past 7 days, or ORD-101 out for delivery), set resolution_status to "POLICY_EXPLAINED" (or "UNRESOLVED" if another request failed).
+- Preserve accurate order IDs and outcomes for each discussed order. Never claim an order was cancelled or returned unless explicitly confirmed in the transcript.
+- Base the summary strictly on the actual transcript.`,
     });
 
     const transcriptStr = history

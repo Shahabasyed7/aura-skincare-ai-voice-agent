@@ -80,6 +80,34 @@ export function extractOrderIdFromText(text: string, contextIndicatesOrder: bool
 }
 
 /**
+ * Extracts all unique order IDs mentioned in a given text.
+ */
+export function extractAllOrderIdsFromText(text: string): string[] {
+  if (!text) return [];
+  const found = new Set<string>();
+
+  // 1. Spaced out letters
+  const spacedMatches = Array.from(text.matchAll(/\bO\s+R\s+D(?:\s*-\s*|\s+)?(\d)\s*(\d)\s*(\d)\b/gi));
+  for (const m of spacedMatches) {
+    found.add(`ORD-${m[1]}${m[2]}${m[3]}`);
+  }
+
+  // 2. Prefixes
+  const prefixMatches = Array.from(text.matchAll(/\b(?:S?ORD(?:ER)?|ORDER\s+NUMBER)[\s#-]*([0-9]{3})\b/gi));
+  for (const m of prefixMatches) {
+    found.add(`ORD-${m[1]}`);
+  }
+
+  // 3. Explicit ORD-XXX
+  const explicitMatches = Array.from(text.matchAll(/\bORD-([A-Za-z0-9]+)\b/gi));
+  for (const m of explicitMatches) {
+    found.add(`ORD-${m[1].toUpperCase()}`);
+  }
+
+  return Array.from(found);
+}
+
+/**
  * get_order_details(order_id)
  * Validates ID and retrieves the corresponding mock order.
  * Unknown IDs return a clear, safe error rather than fabricated data.
